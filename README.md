@@ -260,21 +260,3 @@ npm run dist   # AppImage and tar.gz in dist/
 - Fonts: Chakra Petch and JetBrains Mono, SIL Open Font License, via Fontsource.
 
 The code is MIT, see [LICENSE](LICENSE).
-
-## Быстрый старт
-
-```sh
-git clone https://github.com/Hybabybabyba/capri-linux.git ~/src/capri-linux
-cd ~/src/capri-linux
-./bin/bootstrap.sh     # зависимости, ключ Groq, команда capri, ярлык и автозапуск
-capri                  # или npm start
-```
-
-1. Ключ Groq берётся из `~/.zshrc`, `~/.bashrc` или конфига fish. Если его там нет, `bootstrap.sh`
-   спросит ключ и сам пропишет `export GROQ_API_KEY=...`.
-2. Добавь в конфиг Hyprland правила окон и бинды из раздела [Hyprland config](#hyprland-config). Без
-   правил оверлей будет вести себя как обычное окно.
-3. Клик по Капри открывает её HUD: пиши, что сделать. `SUPER+SHIFT+X` разбирает, что свалилось в
-   терминале, `SUPER+SHIFT+R` разбирает выделенный текст или ссылку.
-4. Настройки — в трее или в меню по правому клику на Капри, файл:
-   `~/.local/share/capri-desktop/config.json`.
