@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+
+if [[ "${GROQ_API_KEY:-}" != gsk_* ]]; then
+  fish_dir="${XDG_CONFIG_HOME:-$HOME/.config}/fish"
+  key="$({
+    sed -nE 's/^[[:space:]]*(export[[:space:]]+)?GROQ_API_KEY=(.*)$/\2/p' ~/.zshrc ~/.bashrc
+    sed -nE 's/^[[:space:]]*set[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*GROQ_API_KEY[[:space:]]+(.*)$/\2/p' \
+      "$fish_dir/config.fish" "$fish_dir"/conf.d/*.fish
+    sed -nE 's/^SETUVAR[[:space:]]+(--export[[:space:]]+)?GROQ_API_KEY:(.*)$/\2/p' "$fish_dir/fish_variables"
+  } 2>/dev/null | sed 's/[[:space:]]#.*//' | tr -dc 'A-Za-z0-9_\n-' | grep '^gsk_' | tail -n1 || true)"
+  if [ -n "$key" ]; then export GROQ_API_KEY="$key"; fi
+fi
+
+ELECTRON="$ROOT/node_modules/.bin/electron"
+if [ ! -x "$ELECTRON" ]; then
+  echo "capri: нет $ELECTRON — запусти bin/bootstrap.sh (или npm install в $ROOT)" >&2
+  exit 1
+fi
+exec "$ELECTRON" "$ROOT" "$@"

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+dir="$(dirname "$(readlink -f "$0")")"
+if [ -n "${CAPRI_NODE:-}" ]; then exec env ELECTRON_RUN_AS_NODE=1 "$CAPRI_NODE" "$dir/context_snapshot.js" "$@"; fi
+exec node "$dir/context_snapshot.js" "$@"

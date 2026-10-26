@@ -7,3 +7,32 @@ Thumbs.db
 
 # local debug captures
 captures/
+
+# Electron/Chromium profile and Capri's own data. Since userData moved to
+# ~/.local/share/capri-desktop these no longer appear here, but older runs left them behind.
+/Cache/
+/Code Cache/
+/Crashpad/
+/DawnGraphiteCache/
+/DawnWebGPUCache/
+/Dictionaries/
+/GPUCache/
+/GPUPersistentCache/
+/Local Storage/
+/Session Storage/
+/Shared Dictionary/
+/blob_storage/
+/IndexedDB/
+/Local State
+/Network Persistent State
+/Preferences
+/DIPS
+/DIPS-wal
+/Trust Tokens
+/Trust Tokens-journal
+/Singleton*
+/declarative_performance_observer.db*
+/config.json
+/arch-sentinel.json
+/sounds/
+*.log.1

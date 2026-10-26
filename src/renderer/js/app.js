@@ -1,13 +1,14 @@
 import { Capri } from './capri.js';
-import { FxLayer } from './fx.js';
+import { FxLayer, GRAB_FRAMES } from './fx.js';
 import { Chip, Mask } from './chip.js';
 import { Panel } from './panel.js';
 import { Voice } from './voice.js';
 import { Brain } from './brain.js';
 import { LINES } from './lines.js';
-import { pick, fmt } from './util.js';
+import { pick, power } from './util.js';
 
 const host = window.host;
+const t = LINES.ru;
 
 function loadImage(src) {
   return new Promise((resolve, reject) => {
@@ -18,21 +19,23 @@ function loadImage(src) {
   });
 }
 
-// close-ups of her for the cut-ins, frames of the show (tools/build-cutins.py)
 const CUTINS = ['grin', 'laugh', 'eyes', 'many', 'look'];
 
 async function boot() {
-  const [config, image, ...cutins] = await Promise.all([
+  const [config, image, intro, ...cutins] = await Promise.all([
     host.getConfig(),
     loadImage('../../assets/capri/capri-full.png'),
+    Promise.all(GRAB_FRAMES.map((name) => loadImage(`../../assets/capri/intro-${name}.webp`).catch(() => null)))
+      .then((cels) => Promise.all(cels.map((cel) => cel && createImageBitmap(cel))))
+      .then((cels) => (cels[0] ? Object.fromEntries(GRAB_FRAMES.map((name, i) => [name, cels[i]])) : null)),
     ...CUTINS.map((name) => loadImage(`../../assets/capri/cutin-${name}.png`)),
     document.fonts.load('600 16px "Chakra Petch"'),
     document.fonts.load('400 11px "JetBrains Mono"'),
   ]);
-  document.documentElement.lang = config.lang;
 
   const fx = new FxLayer(document.getElementById('fx'), {
     cutins: Object.fromEntries(CUTINS.map((name, i) => [name, cutins[i]])),
+    intro,
   });
   fx.resize(innerWidth, innerHeight);
   const chip = new Chip(document.getElementById('chip'));
@@ -46,7 +49,7 @@ async function boot() {
   const panel = new Panel({
     panel: document.getElementById('panel'),
     ticker: document.getElementById('ticker'),
-    labels: LINES[config.lang] || LINES.fr,
+    labels: t,
   });
 
   const capri = new Capri({
@@ -60,18 +63,69 @@ async function boot() {
   capri.possessWindows = config.possess;
   capri.setScale(config.scale);
 
-  const brain = new Brain({ capri, panel, voice, host, lang: config.lang });
+  const brain = new Brain({ capri, panel, voice, host });
 
-  // Click-through everywhere except on her body, the panel and her biochip.
-  let interactive = false;
+  const hudForm = document.getElementById('hud');
+  const hudInput = document.getElementById('hud-input');
+  let hudOpen = false;
+
+  const openHud = async () => {
+    if (hudOpen) return;
+    hudOpen = true;
+    if (capri.stowed) { host.setConfig({ visible: true }); await capri.unstow(); }
+    capri.wake();
+    await host.openHud();
+    hudForm.hidden = false;
+    requestAnimationFrame(() => hudForm.classList.add('is-open'));
+    hudInput.focus();
+  };
+  const fitHudInput = () => {
+    hudInput.style.height = 'auto';
+    hudInput.style.height = `${hudInput.scrollHeight}px`;
+  };
+  hudInput.addEventListener('input', fitHudInput);
+  const closeHud = async ({ returnFocus = true } = {}) => {
+    if (!hudOpen) return;
+    hudOpen = false;
+    hudForm.classList.remove('is-open');
+    hudInput.blur();
+    hudInput.value = '';
+    fitHudInput();
+    setTimeout(() => { if (!hudOpen) hudForm.hidden = true; }, 250);
+    if (returnFocus) await host.closeHud();
+  };
+
+  hudForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const text = hudInput.value.trim();
+    if (!text) return;
+    brain.ask(text);
+    closeHud();
+  });
+  hudInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      hudForm.requestSubmit();
+      return;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      host.escape();
+      closeHud({ returnFocus: false });
+    }
+  });
+
+   let interactive = false;
   let mouse = null;
   const setInteractive = (on) => {
     if (on === interactive) return;
     interactive = on;
     host.setInteractive(on);
   };
+
   const onChip = () => Boolean(chip.visible && mouse && chip.contains(mouse.x, mouse.y, 0));
   const refreshHit = () => {
+    if (hudOpen) return setInteractive(true);
     if (capri.dragging) return setInteractive(true);
     if (!mouse) return setInteractive(false);
     const r = panel.rect();
@@ -79,12 +133,9 @@ async function boot() {
     document.body.style.cursor = onChip() ? 'pointer' : '';
     return setInteractive(Boolean(onPanel || capri.hit(mouse.x, mouse.y) || onChip()));
   };
-  // Her biochip: her eyes on it follow the pointer over it, and she comes out when you click it
-  // (only then, so the pointer passing through that corner doesn't call her back).
-  // Her mask, asleep: the pointer coming over it stirs her, and a moment of that wakes her up.
   let wakeTimer = 0;
   const comeOut = () => {
-    if (capri.stowed) host.setConfig({ visible: true }); // the tray and Ctrl+Alt+C follow
+    if (capri.stowed) host.setConfig({ visible: true });
     capri.unstow();
   };
   const hoverChip = () => {
@@ -111,14 +162,40 @@ async function boot() {
     refreshHit();
     hoverChip();
   });
+  host.onPointer((c) => {
+    if (interactive) return;
+    mouse = c && c.inside ? { x: c.x, y: c.y } : null;
+    refreshHit();
+    hoverChip();
+  });
+
+  const box = (el) => {
+    if (!el || el.hidden) return null;
+    const r = el.getBoundingClientRect();
+    return r.width && r.height ? { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) } : null;
+  };
+  let sentZones = '';
+  const sendZones = () => {
+    const zones = [];
+    if (!capri.hidden && !capri.stowed) zones.push(box(capri.canvas));
+    const r = panel.rect();
+    if (r) zones.push({ x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) });
+    if (chip.visible) zones.push(box(chip.canvas));
+    if (hudOpen) zones.push(box(hudForm));
+    const hold = hudOpen || capri.dragging;
+    const list = zones.filter(Boolean);
+    const key = JSON.stringify([hold, list.map((z) => [z.x >> 3, z.y >> 3, z.w >> 3, z.h >> 3])]);
+    if (key === sentZones) return;
+    sentZones = key;
+    host.setZones(list, hold);
+  };
+  setInterval(sendZones, 33);
   window.addEventListener('click', (e) => {
     if (chip.visible && chip.contains(e.clientX, e.clientY, 0)) comeOut();
   });
 
-  // wiring
   capri.onMove = (head) => {
-    panel.setAnchor(head, capri.view);
-    // she may have moved out from under a still pointer: never leave a dead click zone behind
+    panel.setAnchor({ ...head, lean: capri.pointing ? -capri.pointing.dir : 0 }, capri.view);
     refreshHit();
   };
   capri.onTeleport = (phase) => (phase === 'start' ? panel.suspend() : panel.resume());
@@ -139,41 +216,38 @@ async function boot() {
     }
   };
   capri.onMode = (mode, prev) => chip.setMode(mode, prev);
-  // now and then she says something about the satellite: while she looks at it, or once
-  // the red light has gone up (never during, nothing should cover that)
   capri.onGaze = (when) => {
-    const lines = when === 'end' ? brain.t.uplink : brain.t.gaze;
+    const lines = when === 'end' ? t.uplink : t.gaze;
     if (!panel.visible && Math.random() < (when === 'end' ? 0.6 : 0.4)) panel.say({ kind: 'info', line: pick(lines), hold: 3800 });
   };
   capri.onClick = () => {
-    if (panel.visible) panel.hide();
-    else brain.status();
+    if (panel.visible) { panel.hide(); return; }
+    if (hudOpen) { closeHud(); return; }
+    openHud();
   };
   panel.onChar = (kind) => voice.play('blip', { mood: kind });
   panel.onTalk = (talking) => talking && capri.perform('talk');
 
-  // The demo's second half, after its fake Claude session: everything she does on her own, one
-  // after the other, a line before each.
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   const until = async (done, max = 15000) => {
     for (const t0 = Date.now(); !done() && Date.now() - t0 < max;) await wait(100);
   };
   const free = () => !capri.busy && !capri.act && capri.stance !== 'fall';
   brain.onShowcase = async () => {
-    const t = brain.t.showcase;
+    const s = t.showcase;
     const caption = (line) => panel.say({ kind: 'info', line, hold: 2200 });
-    capri.nextMove = capri.nextGaze = performance.now() + 120000; // nothing of her own in between
+    capri.nextMove = capri.nextGaze = performance.now() + 120000;
     if (capri.stowed) await capri.unstow();
     if (capri.dormant) capri.wake();
     await until(free);
     panel.hide();
 
-    caption(t.minds);
+    caption(s.minds);
     await wait(1000);
     await capri.perform('split');
     await wait(900);
 
-    caption(t.zap);
+    caption(s.zap);
     await wait(1000);
     const h = capri.head();
     capri.zap(h.x + capri.towardCenter() * 280, h.y - 170);
@@ -183,80 +257,56 @@ async function boot() {
     if (capri.gaze({ big: true })) await until(() => !capri.sky);
     await wait(2500);
 
-    // a little terminal opens for her to take over, and closes under her once she's done with it
-    if (capri.possessWindows && (await host.demoWindow(true))) {
-      const top = () => capri.windows.wins.find((w) => capri.canSit(w)); // it opens on top of everything
-      await until(top, 4000);
-      const win = top();
-      const seat = win && { win, dx: win.w * 0.4 };
-      if (seat) {
-        panel.hide();
-        await capri.sitOn(seat);
-        await until(free);
-        caption(t.possess);
-        await wait(1400);
-        panel.hide();
-        await capri.possess();
-        await wait(1800);
-      }
-      host.demoWindow(false);
-      await wait(400);
-      await until(free); // she may have fallen off it
-      await wait(900);
-    }
-
-    caption(t.sleep);
+    caption(s.sleep);
     await wait(1400);
     panel.hide();
     capri.setMode('sleep');
-    await wait(2500); // dozing off
+    await wait(2500);
     await capri.doze();
     await wait(4500);
     capri.wake();
     await until(free);
     await wait(1200);
 
-    caption(t.chip);
+    caption(s.chip);
     await wait(1600);
     panel.hide();
     await capri.stow();
     await wait(3500);
     await capri.unstow();
     await wait(600);
-    panel.say({ kind: 'info', line: t.end, hold: 5000 });
+    panel.say({ kind: 'info', line: s.end, hold: 5000 });
   };
-
-  host.onClaudeEvent((evt) => brain.handle(evt));
-  host.onWindows((data) => {
-    capri.setWindows(data);
-    brain.onWindows(data);
-  });
 
   host.onResize(({ width, height }) => {
     fx.resize(width, height);
     chip.place(width, height);
     capri.setView(width, height);
   });
+  capri.onMenu = () => host.openMenu();
+  window.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    if (chip.visible && chip.contains(e.clientX, e.clientY, 0)) host.openMenu();
+  });
+
   window.addEventListener('resize', () => {
     fx.resize(innerWidth, innerHeight);
     chip.place(innerWidth, innerHeight);
     capri.setView(innerWidth, innerHeight);
   });
 
+  const applyPower = (p) => { power.slow = p?.saver ? 2 : 1; };
+  host.onPower?.(applyPower);
+  host.power?.().then(applyPower);
+
   host.onConfig((cfg) => {
     voice.configure(cfg);
     capri.wander = cfg.wander;
     capri.possessWindows = cfg.possess;
     if (cfg.scale !== capri.scale) capri.setScale(cfg.scale);
-    if (cfg.lang !== brain.lang) {
-      brain.lang = cfg.lang;
-      panel.labels = LINES[cfg.lang] || LINES.fr;
-      document.documentElement.lang = cfg.lang;
-    }
   });
 
   host.onCommand(async (cmd) => {
-    const t = brain.t;
     switch (cmd.name) {
       case 'teleport':
         capri.teleport(capri.spot('random'));
@@ -264,11 +314,13 @@ async function boot() {
       case 'status':
         brain.status();
         break;
-      case 'stow': // Ctrl+Alt+C: into her biochip, or back out
-        if (cmd.on) capri.stow();
-        else capri.unstow();
+      case 'hud':
+        openHud();
         break;
-      case 'satellite': // the whole sequence, on demand (tray)
+      case 'stow':
+        if (cmd.on) { await closeHud({ returnFocus: false }); capri.stow(); } else capri.unstow();
+        break;
+      case 'satellite':
         if (capri.stowed) {
           host.setConfig({ visible: true });
           await capri.unstow();
@@ -277,14 +329,21 @@ async function boot() {
         if (capri.stance === 'peek') await capri.unpeek();
         if (!capri.gaze({ big: true })) setTimeout(() => capri.gaze({ big: true }), 1500);
         break;
-      case 'hooks':
-        if (cmd.ok) panel.say({ kind: 'info', line: cmd.action === 'install' ? t.hooksOk : t.hooksRemoved, hold: 6000 });
-        else panel.say({ kind: 'error', line: fmt(t.hooksFail, { error: cmd.error }), hold: 9000 });
+      case 'showcase':
+        brain.onShowcase?.();
         break;
-      // --dev helpers
+      case 'progress':
+      case 'task':
+        if (capri.stowed) {
+          host.setConfig({ visible: true });
+          await capri.unstow();
+        }
+        if (cmd.name === 'progress') brain.progress(cmd.line);
+        else brain.ask(cmd.prompt, { label: cmd.label });
+        break;
       case 'pose':
         capri.debug = cmd.params || null;
-        if (cmd.still) capri.nextMove = capri.nextGaze = Infinity; // no wandering off mid-test
+        if (cmd.still) capri.nextMove = capri.nextGaze = Infinity;
         if (cmd.hush) {
           panel.setTicker(null);
           panel.hide();
@@ -295,20 +354,16 @@ async function boot() {
         if (cmd.facing) capri.facing = cmd.facing;
         capri.drawFrame();
         break;
-      case 'focus': // as if window `fg` had come to the front
-        capri.windows = { ...capri.windows, fg: cmd.fg };
-        brain.onWindows(capri.windows);
+      case 'intro':
+        panel.hide();
+        await capri.intro(capri.spot('post'), cmd.still ? { still: true } : {});
         break;
       case 'freeze':
         capri.hidden = Boolean(cmd.on);
         break;
       case 'act':
-        // behaviours by method name (gaze, celebrate, hurt, shed, peek, fall, wanderStep...) or acts by name
         if (cmd.act === 'sit') {
-          // pile: n-th window she could sit on from the top of the pile (0: the --dev test window
-          // opened last), instead of the usual choice
-          const top = cmd.pile !== undefined && capri.windows.wins.filter((w) => capri.canSit(w))[cmd.pile];
-          const seat = top ? { win: top, dx: top.w * 0.4 } : capri.pickSeat();
+          const seat = capri.pickSeat();
           if (seat) capri.sitOn(seat);
         } else if (typeof capri[cmd.act] === 'function') capri[cmd.act](...(cmd.args || []));
         else capri.perform(cmd.act, cmd.dir || 0);
@@ -318,29 +373,15 @@ async function boot() {
     }
   });
 
-  // entrance
-  // put away last time: she starts in her biochip
   if (config.visible === false) capri.stowNow();
+  else if (intro) await capri.intro(capri.spot('post'));
   else await capri.materialize(capri.spot('post'));
-  const hooks = await host.hooksStatus();
-  if (!hooks.installed) {
-    panel.say({ kind: 'info', line: t0(config.lang).noHooks, hold: 9000 });
+  const groqStatus = await host.groqStatus();
+  if (!groqStatus.hasKey) {
+    panel.say({ kind: 'error', line: t.noKey, hold: 10000 });
   } else {
-    panel.say({ kind: 'info', line: pick(t0(config.lang).online), hold: 4000 });
+    panel.say({ kind: 'info', line: pick(t.online), hold: 4000 });
   }
-}
-
-// boot-time lines that only make sense here
-function t0(lang) {
-  return lang === 'en'
-    ? {
-      online: ['Capri online.', 'Back on your desktop, choom.'],
-      noHooks: 'I can’t see Claude yet. Tray icon › “Install Claude Code hooks”.',
-    }
-    : {
-      online: ['Capri en ligne.', 'De retour sur ton bureau, choom.'],
-      noHooks: 'Je ne vois pas encore Claude. Clique sur mon icône près de l’horloge, puis « Installer les hooks ».',
-    };
 }
 
 boot().catch((err) => {

@@ -9,16 +9,25 @@ const on = (channel) => (fn) => {
 };
 
 contextBridge.exposeInMainWorld('host', {
-  onClaudeEvent: on('claude:event'),
   onCommand: on('capri:command'),
   onConfig: on('capri:config'),
   onResize: on('overlay:resize'),
-  onWindows: on('windows:update'),
+  onPower: on('capri:power'),
+  power: () => ipcRenderer.invoke('env:power'),
   setInteractive: (on) => ipcRenderer.send('overlay:interactive', Boolean(on)),
-  cursor: () => ipcRenderer.invoke('overlay:cursor'),
+  setZones: (zones, hold) => ipcRenderer.send('overlay:zones', { zones, hold: Boolean(hold) }),
+  onPointer: on('overlay:pointer'),
   getConfig: () => ipcRenderer.invoke('config:get'),
   setConfig: (patch) => ipcRenderer.invoke('config:set', patch),
   listSounds: () => ipcRenderer.invoke('sounds:list'),
-  hooksStatus: () => ipcRenderer.invoke('hooks:status'),
-  demoWindow: (open) => ipcRenderer.invoke('demo:window', Boolean(open)),
+  openMenu: () => ipcRenderer.send('menu:open'),
+
+  openHud: () => ipcRenderer.invoke('hud:open'),
+  closeHud: () => ipcRenderer.invoke('hud:close'),
+  escape: () => ipcRenderer.send('overlay:escape'),
+
+  groqStatus: () => ipcRenderer.invoke('groq:status'),
+  askGroq: (messages) => ipcRenderer.invoke('groq:ask', messages),
+  onAgentStep: on('agent:step'),
+  onNotice: on('capri:notice'),
 });

@@ -15,17 +15,15 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / 'assets' / 'capri' / 'capri-cutout.png'
 OUT = ROOT / 'assets' / 'capri' / 'capri-full.png'
-WIDTH = 240     # room for the mirrored hand
-MIRROR = 234    # x' = MIRROR - x puts the left shoulder (98, 168) on the right one
-
+WIDTH = 240
+MIRROR = 234
 
 def hanging_arm(x, y):
     if y < 168 or y > 292:
         return False
-    if x < 128 + max(0, y - 190) * 0.2:   # the leg next to it stays
+    if x < 128 + max(0, y - 190) * 0.2:
         return False
-    return not (y < 195 and x > 160)      # nor the hair spike at x~178
-
+    return not (y < 195 and x > 160)
 
 def reaching_arm(x, y):
     """The arm on the left of the cut-out (same rule as armL() in the shader)."""
@@ -34,7 +32,6 @@ def reaching_arm(x, y):
     top = 159 + (98 - x) * 0.5
     bot = 234 if x < 50 else 178 + (98 - x) * 0.62
     return top <= y <= bot
-
 
 def main():
     src = Image.open(SRC).convert('RGBA')
@@ -49,7 +46,6 @@ def main():
     print(f'wrote {OUT} {out.size}')
 
     if '--preview' in sys.argv:
-        # what the shader draws at rest: the mirrored arm tucked under the body
         arm = Image.new('RGBA', out.size, (0, 0, 0, 0))
         apx, spx = arm.load(), src.load()
         for y in range(src.height):
@@ -62,7 +58,6 @@ def main():
         path = sys.argv[sys.argv.index('--preview') + 1]
         bg.resize((out.width * 2, out.height * 2), Image.NEAREST).save(path)
         print(f'preview {path}')
-
 
 if __name__ == '__main__':
     main()

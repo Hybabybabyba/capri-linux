@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+die() { echo "media_control: $2" >&2; exit "$1"; }
+
+need() { command -v "$1" >/dev/null || die 3 "нет программы $1"; }
+
+player() {
+  need playerctl
+  playerctl "$@" 2>&1 || die 3 "плеер не найден или не ответил (playerctl $*)"
+}
+
+TOOL="${CAPRI_VOLUME_TOOL:-}"
+if [ -z "$TOOL" ] || [ "$TOOL" = none ] || ! command -v "$TOOL" >/dev/null; then
+  TOOL=''
+  for t in pamixer wpctl pactl; do command -v "$t" >/dev/null && { TOOL="$t"; break; }; done
+fi
+need_volume() { [ -n "$TOOL" ] || die 3 'нет pamixer, wpctl или pactl'; }
+
+WP_SINK='@DEFAULT_AUDIO_SINK@'
+PA_SINK='@DEFAULT_SINK@'
+
+vol_get() {
+  case "$TOOL" in
+    pamixer) pamixer --get-volume ;;
+    wpctl) wpctl get-volume "$WP_SINK" | awk '{printf "%d\n", $2 * 100 + 0.5}' ;;
+    pactl) pactl get-sink-volume "$PA_SINK" | grep -o '[0-9]*%' | head -n1 | tr -d % ;;
+  esac
+}
+
+muted() {
+  case "$TOOL" in
+    pamixer) [ "$(pamixer --get-mute)" = true ] ;;
+    wpctl) wpctl get-volume "$WP_SINK" | grep -q MUTED ;;
+    pactl) pactl get-sink-mute "$PA_SINK" | grep -q yes ;;
+  esac
+}
+
+mute_set() {
+  case "$TOOL" in
+    pamixer) case "$1" in 1) pamixer --mute ;; 0) pamixer --unmute ;; *) pamixer -t ;; esac ;;
+    wpctl) wpctl set-mute "$WP_SINK" "$1" ;;
+    pactl) pactl set-sink-mute "$PA_SINK" "$1" ;;
+  esac
+}
+
+vol_step() {
+  case "$TOOL" in
+    pamixer) if [ "${1:0:1}" = + ]; then pamixer -i "${1:1}"; else pamixer -d "${1:1}"; fi ;;
+    wpctl) wpctl set-volume -l 1.5 "$WP_SINK" "${1:1}%${1:0:1}" ;;
+    pactl) pactl set-sink-volume "$PA_SINK" "$1%" ;;
+  esac
+}
+
+vol_set() {
+  case "$TOOL" in
+    pamixer) pamixer --allow-boost --set-volume "$1" ;;
+    wpctl) wpctl set-volume -l 1.5 "$WP_SINK" "$1%" ;;
+    pactl) pactl set-sink-volume "$PA_SINK" "$1%" ;;
+  esac
+}
+
+volume_line() {
+  local v
+  v="$(vol_get 2>/dev/null)" || return
+  [ -n "$v" ] || return
+  echo "громкость: ${v}%$(muted 2>/dev/null && echo ', звук выключен')"
+}
+
+now_playing() {
+  local s
+  s="$(playerctl status 2>/dev/null)" || { echo 'плеер: ничего не играет'; return; }
+  echo "плеер: $s — $(playerctl metadata --format '{{artist}} — {{title}}' 2>/dev/null)"
+}
+
+sink_rows() {
+  LC_ALL=C pactl list sinks | awk '
+    /^Sink #/ { idx = substr($2, 2) }
+    /^\tName: / { name = $2 }
+    /^\tDescription: / { sub(/^\tDescription: /, ""); print idx "\t" $0 "\t" name }'
+}
+
+list_sinks() {
+  if command -v pactl >/dev/null; then
+    local def
+    def="$(pactl get-default-sink 2>/dev/null)"
+    sink_rows | while IFS=$'\t' read -r idx desc name; do
+      printf '%s %s: %s\n' "$([ "$name" = "$def" ] && echo '*' || echo ' ')" "$idx" "$desc"
+    done
+  elif command -v wpctl >/dev/null; then
+    wpctl status | awk '/Sinks:/{on=1; next} on && /^ │  *$|Sources:/{exit} on'
+  else
+    die 3 'нет pactl или wpctl'
+  fi
+}
+
+set_sink() {
+  local want="$1" name=''
+  if command -v pactl >/dev/null; then
+    name="$(sink_rows | awk -F'\t' -v w="$want" '$1 == w || $3 == w || index(tolower($2), tolower(w)) {print $3; exit}')"
+    [ -n "$name" ] || die 2 "нет устройства '$want' (media_control sinks)"
+    pactl set-default-sink "$name" || die 3 "не удалось переключить на $name"
+    pactl list short sink-inputs | cut -f1 | while read -r input; do pactl move-sink-input "$input" "$name" 2>/dev/null; done
+  else
+    need wpctl
+    [[ "$want" =~ ^[0-9]+$ ]] || die 2 'для wpctl нужен номер из media_control sinks'
+    wpctl set-default "$want" || die 3 "не удалось переключить на $want"
+  fi
+  list_sinks
+}
+
+cmd="${1:-status}"
+case "$cmd" in
+  play|pause|next|stop) player "$cmd" >/dev/null; sleep 0.3; now_playing ;;
+  toggle|play-pause) player play-pause >/dev/null; sleep 0.3; now_playing ;;
+  prev|previous) player previous >/dev/null; sleep 0.3; now_playing ;;
+  volume_up|up|volume_down|down)
+    need_volume; step="${2:-10}"; [[ "$step" =~ ^[0-9]+$ ]] || die 2 'шаг — число'
+    if [[ "$cmd" == *up ]]; then mute_set 0; vol_step "+$step"; else vol_step "-$step"; fi
+    volume_line ;;
+  volume|set)
+    need_volume; v="${2:-}"; [[ "$v" =~ ^[0-9]+$ && "$v" -le 150 ]] || die 2 'volume <0-150>'
+    mute_set 0; vol_set "$v"; volume_line ;;
+  mute) need_volume; mute_set 1; volume_line ;;
+  unmute) need_volume; mute_set 0; volume_line ;;
+  mute_toggle) need_volume; mute_set toggle; volume_line ;;
+  sinks|devices) list_sinks ;;
+  sink|device) [ -n "${2:-}" ] || die 2 'sink <номер|имя>'; set_sink "${*:2}" ;;
+  status) now_playing; need_volume; volume_line; echo "звук через: $TOOL" ;;
+  *) die 2 "неизвестная команда: $cmd (play, pause, toggle, next, prev, stop, volume_up, volume_down, volume N, mute, unmute, status, sinks, sink N)" ;;
+esac

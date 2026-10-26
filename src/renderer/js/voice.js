@@ -1,10 +1,5 @@
-// Capri's sounds, synthesized with Web Audio so nothing has to ship with the repo.
-// Any file dropped in the custom sounds folder (tray > Son) named after a cue
-// (teleport-out.mp3, done.wav, alert.ogg...) replaces the synth for that cue.
-
 import { rand, pick } from './util.js';
 
-// a minor-pentatonic set for the talking blips; three detuned voices = a chorus of minds
 const BLIP_NOTES = [62, 65, 67, 69, 72, 74, 77, 79];
 const midi = (n) => 440 * Math.pow(2, (n - 69) / 12);
 
@@ -16,7 +11,7 @@ export class Voice {
     this.master = null;
     this.muted = false;
     this.volume = 0.7;
-    this.custom = new Map(); // cue -> AudioBuffer
+    this.custom = new Map();
     this.lastBlip = 0;
   }
 
@@ -26,7 +21,6 @@ export class Voice {
     this.ctx = ctx;
     this.master = ctx.createGain();
     this.master.gain.value = this.volume;
-    // soft clip so stacked cues never get harsh
     const shaper = ctx.createWaveShaper();
     const curve = new Float32Array(1024);
     for (let i = 0; i < curve.length; i++) {
@@ -135,13 +129,11 @@ export class Voice {
     src.stop(t + dur + 0.05);
   }
 
-  // teleport: saw sweep + filtered noise, upward when leaving, downward when landing
   zap(arriving) {
     const t = this.ctx.currentTime;
     const o = this.osc('sawtooth', arriving ? 1600 : 180, t, 0.22, 0.12);
     o.frequency.exponentialRampToValueAtTime(arriving ? 140 : 2400, t + 0.2);
     this.noiseBurst(t, 0.2, 0.22, arriving ? 6000 : 400, arriving ? 500 : 7000, 3);
-    // bit-crushy stutter
     for (let i = 0; i < 4; i++) this.osc('square', rand(800, 3200), t + 0.02 + i * 0.035, 0.02, 0.05);
     if (arriving) this.osc('triangle', 70, t + 0.16, 0.18, 0.3);
   }
@@ -154,8 +146,8 @@ export class Voice {
     const base = pick(BLIP_NOTES) + (mood === 'alert' ? 5 : mood === 'error' ? -7 : 0);
     const f = midi(base);
     this.osc('square', f, t, 0.035, 0.035);
-    this.osc('triangle', f * 1.498, t + 0.004, 0.03, 0.025); // a fifth up
-    this.osc('square', f * 0.501, t + 0.008, 0.03, 0.018);   // an octave down, slightly off
+    this.osc('triangle', f * 1.498, t + 0.004, 0.03, 0.025);
+    this.osc('square', f * 0.501, t + 0.008, 0.03, 0.018);
   }
 
   tick() {
@@ -163,7 +155,6 @@ export class Voice {
     this.noiseBurst(t, 0.03, 0.06, 3000, 9000, 8);
   }
 
-  // red lightning: a buzz under a crackle of tiny bursts (soft: the small hacking sparks)
   bolt(soft = false) {
     const t = this.ctx.currentTime;
     const k = soft ? 0.35 : 1;
@@ -174,7 +165,6 @@ export class Voice {
     }
   }
 
-  // charging up before the red light goes up: a buzz swelling and climbing, crackling more and more
   charge() {
     const ctx = this.ctx;
     const t = ctx.currentTime;
@@ -192,8 +182,6 @@ export class Voice {
     for (let i = 0; i < 6; i++) this.noiseBurst(t + 0.08 + i * 0.09, 0.02, 0.04 + i * 0.016, 3000, 7000, 6);
   }
 
-  // the window she took over laughs with all her voices: three falling chirps, each a detuned
-  // chord, over a hiss
   possess() {
     const t = this.ctx.currentTime;
     [79, 76, 72].forEach((n, i) => {
@@ -205,7 +193,6 @@ export class Voice {
     this.noiseBurst(t, 0.3, 0.05, 1200, 5000, 3);
   }
 
-  // the launch into the victory pose: a quick upward whoosh
   rise() {
     const t = this.ctx.currentTime;
     const o = this.osc('sawtooth', 160, t, 0.2, 0.07);
@@ -213,7 +200,6 @@ export class Voice {
     this.noiseBurst(t, 0.18, 0.12, 500, 6000, 2);
   }
 
-  // touching down: a soft digital thump
   land() {
     const t = this.ctx.currentTime;
     const o = this.osc('triangle', 150, t, 0.14, 0.22);
@@ -221,7 +207,6 @@ export class Voice {
     this.noiseBurst(t, 0.06, 0.08, 1800, 400, 1.5);
   }
 
-  // the satellite: two soft, high pings and a shimmer
   star() {
     const t = this.ctx.currentTime;
     this.osc('sine', midi(93), t, 0.9, 0.05);
@@ -235,7 +220,6 @@ export class Voice {
     this.noiseBurst(t + 0.18, 0.08, 0.06, 2000, 8000, 5);
   }
 
-  // bright arpeggio and a glitchy tail
   done() {
     const t = this.ctx.currentTime;
     [64, 68, 71, 75, 76].forEach((n, i) => {

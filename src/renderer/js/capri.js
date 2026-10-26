@@ -1,29 +1,16 @@
-// Capri herself: where she is, how she moves, how she reacts.
-// She acts with her head and her mane like in the show, and she's timed like cel animation:
-// pose-to-pose acts (acting.js) drawn on twos, on ones for the action beats.
-//
-// Stances: floating ("stand"), perched on a window ("sit"), peeking in from a screen edge
-// ("peek"), and falling ("fall") when the window under her goes away or you drop her.
-
 import { SpriteRenderer, SPRITE } from './sprite.js';
 import { ACTS, NEUTRAL, Player } from './acting.js';
-import { sleep, rand, pick, clamp, lerp, ease, tween, reducedMotion } from './util.js';
+import { sleep, rand, pick, clamp, lerp, ease, tween, reducedMotion, today, power } from './util.js';
 
 const ON_TWOS = 1000 / 12;
 const ON_ONES = 1000 / 24;
 const ASLEEP = 1000 / 6;
 const SLEEP_AFTER = 10 * 60 * 1000;
-const DOZE_AFTER = 20 * 1000; // asleep this long, she comes apart down to her mask
-const GRAVITY = 2600; // px/s²
-const THIGH = 73;     // hip to knee, sprite px (see sprite.js)
+const DOZE_AFTER = 20 * 1000;
+const GRAVITY = 2600;
+const THIGH = 73;
 
-const UPLINK_DAY = 'capri.uplinkDay'; // the last day she sent the red light up
-
-// the local date, YYYY-MM-DD
-const today = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-};
+const UPLINK_DAY = 'capri.uplinkDay';
 
 const GREEN = [0.21, 1, 0.48];
 const INK = [0.08, 0.06, 0.11];
@@ -39,19 +26,19 @@ export class Capri {
 
     this.scale = 0.6;
     this.view = { w: innerWidth, h: innerHeight };
-    this.pos = { x: innerWidth - 200, y: innerHeight - 6 }; // her feet
-    this.facing = 1; // 1: as drawn (reaching left), -1: mirrored
-    this.mode = 'idle'; // idle | work | alert | sleep
+    this.pos = { x: innerWidth - 200, y: innerHeight - 6 };
+    this.facing = 1;
+    this.mode = 'idle';
     this.stance = 'stand';
-    this.perch = null;    // { id, dx }: the window she sits on, and where along it
-    this.peekSide = null; // left | right | top
+    this.perch = null;
+    this.peekSide = null;
     this.windows = { fg: 0, wins: [] };
     this.busy = false;
     this.hidden = false;
-    this.stowed = false;  // folded away in her biochip (Ctrl+Alt+C)
-    this.dormant = false; // asleep, down to her mask
+    this.stowed = false;
+    this.dormant = false;
     this.wander = true;
-    this.possessWindows = true; // tray: "Possess my windows"
+    this.possessWindows = true;
     this.dragging = false;
 
     this.p = {
@@ -79,17 +66,19 @@ export class Capri {
     this.lastGlyph = 0;
     this.sleptAt = 0;
     this.uplinkDue = false;
-    this.mouse = null; // last pointer position seen
+    this.pointing = null;
+    this.mouse = null;
 
-    this.onMove = null;     // her head moved on screen
-    this.onTeleport = null; // ('start' | 'end')
+    this.onMove = null;
+    this.onTeleport = null;
     this.onClick = null;
+    this.onMenu = null;
     this.onGaze = null;
-    this.onMode = null;   // (mode, previous)
-    this.onStow = null;   // she's in her biochip
-    this.onUnstow = null; // she's coming out of it
-    this.chipAt = null;   // () => the biochip's middle on screen
-    this.onDoze = null;   // ('start', face) | 'waking' | 'end': down to her mask and back
+    this.onMode = null;
+    this.onStow = null;
+    this.onUnstow = null;
+    this.chipAt = null;
+    this.onDoze = null;
 
     this.alphaMap = this.buildAlphaMap(image);
     this.setScale(this.scale);
@@ -98,9 +87,6 @@ export class Capri {
     requestAnimationFrame(this.loop);
   }
 
-  // ---------- geometry ----------
-
-  // Her silhouette at rest, for hit tests: the cut-out plus the mirrored right arm the shader adds.
   buildAlphaMap(image) {
     const { width: w, height: h, mirror } = SPRITE;
     const c = document.createElement('canvas');
@@ -126,8 +112,6 @@ export class Capri {
     this.place();
   }
 
-  // Flip, lean and squash all pivot on her feet, or on her seat when she sits on a ledge
-  // (so a squash presses her onto it instead of pulling her down through it).
   pivot() {
     const s = this.scale;
     const fx = (SPRITE.pad + SPRITE.feet.x) * s;
@@ -158,7 +142,6 @@ export class Capri {
     this.onMove?.(this.head());
   }
 
-  // her face on screen, plus `top`: the tips of her mane
   head(at = this.pos, facing = this.facing) {
     const s = this.scale;
     const bob = at === this.pos ? this.bob : 0;
@@ -171,7 +154,6 @@ export class Capri {
     return { x: at.x + dx, y: at.y - dy + bob, top: at.y - SPRITE.feet.y * s + bob };
   }
 
-  // Is this screen point on her body? Uses the cut-out's alpha so empty space stays click-through.
   hit(x, y) {
     if (this.hidden || this.p.alpha < 0.5) return false;
     const s = this.scale;
@@ -183,7 +165,6 @@ export class Capri {
     const sx = SPRITE.feet.x + ((x - this.pos.x) / s) * this.facing;
     let sy = SPRITE.feet.y - (fy - y) / s;
     if (this.p.sit > 0 && sy > SPRITE.hip) {
-      // same fold as the shader: short thighs, legs ridden up
       const c = lerp(1, 0.3, this.p.sit);
       sy = sy <= SPRITE.hip + THIGH * c ? SPRITE.hip + (sy - SPRITE.hip) / c : sy + THIGH * (1 - c);
     }
@@ -199,12 +180,10 @@ export class Capri {
     this.facing = this.pos.x > this.view.w / 2 ? 1 : -1;
   }
 
-  // Which way is the middle of the screen from her, -1 or 1.
   towardCenter() {
     return this.pos.x > this.view.w / 2 ? -1 : 1;
   }
 
-  // the reaching side of the cut-out points toward screen x
   faceToward(x) {
     this.facing = x < this.pos.x ? 1 : -1;
   }
@@ -222,7 +201,7 @@ export class Capri {
         return { x: w - side - 30, y: this.floor };
       case 'stage':
         return { x: w * 0.5 + rand(-w * 0.12, w * 0.12), y: this.floor };
-      case 'chip': // next to her biochip, bottom left
+      case 'chip':
         return { x: side + 30, y: this.floor };
       default: {
         const y = Math.random() < 0.65 ? this.floor : rand(SPRITE.height * s + 200, this.floor);
@@ -233,25 +212,22 @@ export class Capri {
     }
   }
 
-  // ---------- windows ----------
-
   setWindows(data) {
     this.windows = data;
     if (this.stance !== 'sit' || this.busy || this.dragging) return;
     const win = data.wins.find((w) => w.id === this.perch.id);
     const dx = win ? clamp(this.perch.dx, 50, win.w - 60) : 0;
     if (!win || !this.canSit(win) || this.covered(win, win.x + dx)) {
-      this.fall(); // the ledge is gone (closed, minimized, maximized or covered)
+      this.fall();
       return;
     }
     const to = this.seat(win, dx);
     if (to.x !== this.pos.x || to.y !== this.pos.y) {
-      this.pos = to; // ride along with the window
+      this.pos = to;
       this.place();
     }
   }
 
-  // Where her feet go so that her hips rest on the window's top edge.
   seat(win, dx) {
     return { x: win.x + dx, y: win.y + 3 + (SPRITE.feet.y - SPRITE.hip) * this.scale };
   }
@@ -261,18 +237,16 @@ export class Capri {
     return !win.max && win.w > 260 && win.y > roomAbove && win.y < this.view.h - 80;
   }
 
-  // Is her spot on that ledge hidden under a window that's above it?
   covered(win, x) {
     const half = 34 * this.scale;
     const { wins } = this.windows;
     for (const o of wins) {
-      if (o === win || o.id === win.id) return false; // reached it: everything after is below
+      if (o === win || o.id === win.id) return false;
       if (o.x < x + half && o.x + o.w > x - half && o.y <= win.y && o.y + o.h >= win.y) return true;
     }
-    return false; // window not in the list any more
+    return false;
   }
 
-  // A window she could sit on, the one in front first. Returns { win, dx } or null.
   pickSeat({ frontOnly = false, except = null } = {}) {
     const options = [];
     for (const win of this.windows.wins) {
@@ -286,8 +260,6 @@ export class Capri {
     return front || options[0] || null;
   }
 
-  // ---------- frame loop ----------
-
   interval() {
     if (this.busy || this.stance === 'fall' || this.act?.player.act.fps === 24) return ON_ONES;
     return this.mode === 'sleep' ? ASLEEP : ON_TWOS;
@@ -296,7 +268,7 @@ export class Capri {
   loop(now) {
     requestAnimationFrame(this.loop);
     if (this.hidden) return;
-    if (now - this.lastDraw < this.interval() - 1) return;
+    if (now - this.lastDraw < this.interval() * power.slow - 1) return;
     this.drawFrame(now);
     this.behave(now);
   }
@@ -308,15 +280,18 @@ export class Capri {
     this.place();
   }
 
-  // Pick the drawing: the stance's cycle underneath, the current act on top.
   animate(now) {
     const p = this.p;
-    p.seed = Math.random() * 100; // a fresh drawing, so the line boils
+    p.seed = Math.random() * 100;
 
     const under = this.base.sample(now);
     const base = under ? this.base.resolve(under.pose, this.facing) : {};
     let act = null;
     let cue = null;
+    if (under && under.index !== this.baseIndex) {
+      this.baseIndex = under.index;
+      if (!this.act) cue = under.cue;
+    }
     if (this.act) {
       const drawing = this.act.player.sample(now);
       if (drawing) {
@@ -331,7 +306,7 @@ export class Capri {
     }
     const pose = { ...NEUTRAL, ...base, ...act };
     if (this.mode === 'sleep' && this.stance === 'sit' && !act) {
-      Object.assign(pose, { head: 0.12, mane: -0.1, kickL: 0.03, kickR: 0.03, armL: -0.45, armR: -0.45 }); // dozing on the ledge
+      Object.assign(pose, { head: 0.12, mane: -0.1, kickL: 0.03, kickR: 0.03, armL: -0.45, armR: -0.45 });
     }
 
     p.head = pose.head;
@@ -345,13 +320,12 @@ export class Capri {
     p.kickR = pose.kickR;
     p.smear = pose.smear;
     p.echo = pose.echo;
-    // on a ledge she stays seated: no lifting off it, no sinking through it
     const bob = this.stance === 'sit' ? clamp(pose.bob, -3, 2) : pose.bob;
     this.bob = this.dragging ? 0 : bob;
     this.tilt = this.dragging ? 0 : pose.tilt;
     this.sx = pose.sx;
     this.sy = pose.sy;
-    if (this.debug) Object.assign(p, this.debug); // --dev pose overrides
+    if (this.debug) Object.assign(p, this.debug);
     if (cue) this.onCue(cue);
   }
 
@@ -367,7 +341,6 @@ export class Capri {
       if (!reducedMotion.matches && this.mode !== 'sleep') this.twitch();
     }
 
-    // a shard of her mane breaks off now and then and drifts away
     if (now > this.nextShed) {
       this.nextShed = now + rand(4000, 11000) * (this.mode === 'sleep' ? 2.5 : 1);
       if (!reducedMotion.matches && this.stance !== 'peek') this.shed();
@@ -401,7 +374,6 @@ export class Capri {
     }
   }
 
-  // What she does with herself when nobody needs her.
   wanderStep() {
     if (!this.wander || this.stance === 'peek') {
       if (this.stance !== 'peek') this.flourish();
@@ -411,7 +383,7 @@ export class Capri {
       const r = Math.random();
       if (r < 0.3) this.flourish();
       else if (r < 0.5 && this.canPossess()) this.possess();
-      else if (r < 0.75) this.fall(); // just hops off the ledge
+      else if (r < 0.75) this.fall();
       else this.teleport(this.spot('random'));
       return;
     }
@@ -428,11 +400,8 @@ export class Capri {
     else this.perform(pick(['spin', 'look', 'hop', 'curious', 'split']), this.towardCenter());
   }
 
-  // ---------- acting ----------
-
-  // Play an act from acting.js. Resolves when it's over (or cut off by a stronger one).
   perform(name, dir = 0, { reach = 1 } = {}) {
-    if (this.stowed || this.dormant) return Promise.resolve(); // nobody to act: she's in her biochip, or just her mask
+    if (this.stowed || this.dormant) return Promise.resolve();
     const act = ACTS[name];
     if (reducedMotion.matches && act.fps === 24) {
       if (act.flip) this.facing *= -1;
@@ -459,8 +428,14 @@ export class Capri {
     this.perch = perch;
     this.peekSide = peekSide;
     this.p.sit = stance === 'sit' ? 1 : 0;
-    this.base = new Player(this.baseAct(), { dir });
+    this.base = this.restBase(dir);
     this.pivot();
+  }
+
+  restBase(dir = 0) {
+    const pt = this.pointing;
+    if (pt && (this.stance === 'stand' || this.stance === 'sit')) return new Player('pointing', { dir: pt.dir, reach: pt.reach });
+    return new Player(this.baseAct(), { dir });
   }
 
   baseAct() {
@@ -473,7 +448,6 @@ export class Capri {
   setMode(mode) {
     const now = performance.now();
     if (mode !== 'sleep') this.lastActivity = now;
-    // after anything happens, stay put a while (so she doesn't wander off right after "done")
     this.nextMove = Math.max(this.nextMove, now + rand(55000, 120000));
     this.nextGaze = Math.max(this.nextGaze, now + rand(30000, 70000));
     if (this.mode === mode) return;
@@ -481,7 +455,7 @@ export class Capri {
     this.mode = mode;
     if (mode === 'sleep') this.sleptAt = now;
     this.onMode?.(mode, prev);
-    if (this.stance === 'stand') this.base = new Player(this.baseAct());
+    if (this.stance === 'stand') this.base = this.restBase();
     const p = this.p;
     if (mode === 'sleep') tween(p, { alpha: 0.55, sparkle: 0.35, boil: 0.4 }, 900, ease.inOut);
     else tween(p, { alpha: 1, sparkle: 1, boil: 0.9 }, 250, ease.out);
@@ -490,10 +464,9 @@ export class Capri {
   wake() {
     if (this.mode === 'sleep') this.setMode('idle');
     this.lastActivity = performance.now();
-    if (this.dormant) this.rouse(); // down to her mask: she comes back
+    if (this.dormant) this.rouse();
   }
 
-  // Somewhere to be while Claude works: on the window in front if she can sit on it, else her corner.
   goToWork() {
     this.setMode('work');
     const seat = this.pickSeat({ frontOnly: true });
@@ -506,7 +479,6 @@ export class Capri {
     if (this.stance !== 'stand' || Math.hypot(post.x - this.pos.x, post.y - this.pos.y) > 320) this.teleport(post);
   }
 
-  // Claude did something: come out of hiding.
   attend() {
     this.wake();
     if (this.stance === 'peek' && !this.busy) this.teleport(this.spot('post'));
@@ -523,7 +495,6 @@ export class Capri {
     }, ON_TWOS * 2);
   }
 
-  // a small jolt each time Claude touches something
   pulse() {
     if (this.busy || reducedMotion.matches) return;
     const p = this.p;
@@ -535,12 +506,11 @@ export class Capri {
   shed() {
     const s = this.scale;
     const h = this.head();
-    const a = rand(-Math.PI * 0.95, -Math.PI * 0.05); // somewhere on the upper rim of the mane
+    const a = rand(-Math.PI * 0.95, -Math.PI * 0.05);
     const r = rand(70, 100) * s;
     this.fx.drift(h.x + Math.cos(a) * r, h.y - 40 * s + Math.sin(a) * r * 0.85, a);
   }
 
-  // A point of the sprite (sprite px) on screen, where she stands, the way she faces.
   toScreen(sx, sy) {
     const s = this.scale;
     return {
@@ -549,12 +519,10 @@ export class Capri {
     };
   }
 
-  // Which arm points to screen side `dir`: 'L' or 'R' (the sprite may be mirrored).
   armToward(dir) {
     return dir * this.facing < 0 ? 'L' : 'R';
   }
 
-  // Shoulder and hand of one arm on screen, at the arm's current angle (same turn as the shader).
   limb(side) {
     const { shoulder, hand, mirror } = SPRITE;
     const a = side === 'L' ? this.p.armL : this.p.armR;
@@ -570,38 +538,30 @@ export class Capri {
     return { shoulder: this.toScreen(sx, shoulder.y), hand: this.toScreen(hx, hy) };
   }
 
-  // The satellite. It crosses high over the open side of the screen, slowly, and her hand
-  // follows it. Mostly she just looks at it ("gaze"). She sends the red light up to it
-  // ("uplink") only when it means something: the first time of the day, and a little while
-  // after Claude finishes a long job (earnUplink). The cues in onCue do the sky.
   gaze({ big } = {}) {
     if (this.busy || this.hidden || this.act || this.stance === 'peek' || this.stance === 'fall') return false;
     big ??= this.uplinkDue || this.lastUplinkDay() !== today();
-    if (reducedMotion.matches) big = false; // no strobing bolt
+    if (reducedMotion.matches) big = false;
     if (big) {
       this.uplinkDue = false;
       try {
         localStorage.setItem(UPLINK_DAY, today());
       } catch {
-        // no storage: she'll just do it again next launch
       }
     }
     const dir = this.towardCenter();
     const { w } = this.view;
     const side = this.armToward(dir);
     const { shoulder } = this.limb(side);
-    // up and well off to the side, so her arm points at it clear of her mane
     const y = clamp(shoulder.y - rand(280, 400), 50, shoulder.y - 180);
     const x = clamp(shoulder.x + dir * rand(380, 520), 40, w - 40);
     const to = { x: clamp(x + dir * rand(170, 260), 30, w - 30), y: y - rand(10, 40) };
     const sat = this.fx.satellite({ x, y }, to, { duration: 9500 });
-    // how far up the arm must come to point at it right now (it hangs ~30 degrees low at rest)
     const reach = () => {
       const at = sat.pos();
       const sh = this.limb(side).shoulder;
       return clamp(Math.atan2(sh.y - at.y, Math.abs(at.x - sh.x)) + 0.52, 0.5, 1.6);
     };
-    // from her fingertips to it
     const road = () => [this.limb(side).hand, sat.pos()];
     this.sky = { sat, road, dir, side, motes: null, surge: null, head: null };
     if (!big) this.onGaze?.('start');
@@ -620,7 +580,6 @@ export class Capri {
     }
   }
 
-  // Claude just finished a long job: the next time she looks up, once things have settled, it's the whole thing.
   earnUplink() {
     this.uplinkDue = true;
     this.nextGaze = performance.now() + rand(25000, 40000);
@@ -636,7 +595,6 @@ export class Capri {
     tween(this.p, { sparkle: this.mode === 'sleep' ? 0.35 : 1 }, 400, ease.out);
   }
 
-  // How far her head has moved since her stars lifted off it.
   moved() {
     const was = this.sky?.head;
     if (!was) return [0, 0];
@@ -644,7 +602,6 @@ export class Capri {
     return [h.x - was.x, h.y - was.y];
   }
 
-  // Points on her mane, where her white specks are (for the stars that lift off it).
   manePoints(n) {
     const s = this.scale;
     const h = this.head();
@@ -654,8 +611,6 @@ export class Capri {
     });
   }
 
-  // Red sparks off her fingers: she's hacking something. On a window, she jacks into it:
-  // the sparks go down into the ledge and run along it.
   spark() {
     if (this.busy || this.hidden || reducedMotion.matches || this.stance === 'peek' || this.stance === 'fall') return;
     const s = this.scale;
@@ -677,7 +632,6 @@ export class Capri {
     this.voice.play('bolt', { soft: true });
   }
 
-  // The menace: a jolt of red lightning at your pointer, and a grin.
   zap(x, y) {
     if (this.busy || this.hidden || this.act || reducedMotion.matches || this.stance !== 'stand') return false;
     const dir = x < this.pos.x ? -1 : 1;
@@ -691,19 +645,16 @@ export class Capri {
     return true;
   }
 
-  // Where a cut-in goes, as fx.cutin's (x, y, dir): next to her head on the `dir` side, else on
-  // the other side (unless `flip` is off because something is going on there), else over her mane.
   cutinAt(dir, { flip = true } = {}) {
     const s = this.scale;
     const h = this.head();
-    const gap = 85 * s + 24, width = 274; // the band plus its slant, see fx.js
+    const gap = 85 * s + 24, width = 274;
     const fits = (d) => (d > 0 ? h.x + gap + width < this.view.w - 8 : h.x - gap - width > 8);
     if (fits(dir)) return [h.x + dir * gap, h.y - 18, dir];
     if (flip && fits(-dir)) return [h.x - dir * gap, h.y - 18, -dir];
     return [clamp(h.x - width / 2, 8, this.view.w - width - 8), Math.max(56, h.top - 58), 1];
   }
 
-  // Flat-colour impact frames, one drawing each.
   async flash(colors) {
     const p = this.p;
     for (const color of colors) {
@@ -715,13 +666,12 @@ export class Capri {
     p.silAmount = 0;
   }
 
-  // Effects and sounds pinned to drawings of an act (the third item of a key in acting.js).
   onCue(cue) {
     const s = this.scale;
     const h = this.head();
     const mane = { x: h.x, y: h.y - 40 * s };
     switch (cue) {
-      case 'gather': // shards sucked into the mane before it blows
+      case 'gather':
         this.fx.burst(mane.x, mane.y, { count: 18, inward: true, power: 0.7, spread: 170 * s });
         break;
       case 'launch':
@@ -741,7 +691,7 @@ export class Capri {
       case 'laugh':
         this.fx.cutin(...this.cutinAt(this.act?.player.dir || this.towardCenter()), { kind: pick(['laugh', 'grin']) });
         break;
-      case 'stare': // every eye she has, on you
+      case 'stare':
         this.fx.cutin(...this.cutinAt(this.act?.player.dir || this.towardCenter()), { kind: 'many', life: 640 });
         break;
       case 'notice':
@@ -760,6 +710,35 @@ export class Capri {
         if (this.zapAt && Math.random() < 0.6) this.fx.cutin(...this.cutinAt(-this.zapAt.dir), { kind: 'look', life: 560 });
         this.zapAt = null;
         break;
+      case 'spot':
+        if (this.pointing) {
+          const { aim } = this.pointing;
+          this.fx.ring(aim.x, aim.y, { size: 0.18 });
+          this.voice.play('tick');
+        }
+        break;
+      case 'coil':
+        this.fx.burst(h.x, h.y + 40 * s, { count: 10, inward: true, power: 0.45, spread: 90 * s });
+        this.voice.play('bolt', { soft: true });
+        break;
+      case 'lock': {
+        const pt = this.pointing;
+        if (pt && !pt.pointer) {
+          const hand = this.limb(pt.side).hand;
+          pt.pointer = this.fx.pointer(() => this.limb(pt.side).hand, pt.rect, pt.aim, { label: pt.label });
+          if (!reducedMotion.matches) {
+            this.fx.bolt(hand, pt.aim, { life: 260, forks: 3, width: 3 });
+            this.fx.ring(pt.aim.x, pt.aim.y, { size: 0.55 });
+            this.fx.burst(pt.aim.x, pt.aim.y, { count: 12, power: 0.5, spread: 20 });
+            this.fx.cutin(...this.cutinAt(-pt.dir, { flip: false }), { kind: 'eyes', life: 480 });
+          }
+          this.voice.play('bolt');
+        }
+        break;
+      }
+      case 'tap':
+        this.pointing?.pointer?.tap();
+        break;
       case 'minds':
         this.twitch();
         break;
@@ -773,7 +752,6 @@ export class Capri {
     }
   }
 
-  // The satellite's cues (acting.js "gaze" and "uplink").
   skyCue(cue) {
     const s = this.scale;
     const sky = this.sky;
@@ -782,15 +760,15 @@ export class Capri {
       case 'glint':
         this.voice.play('star');
         break;
-      case 'starlight': // her specks catch its light
+      case 'starlight':
         tween(this.p, { sparkle: 1.8 }, 500, ease.out);
         break;
-      case 'stars': // they lift off and become a sky; her mane goes dark without them
+      case 'stars':
         sky.head = this.head();
         sky.motes = this.fx.motes(this.manePoints(30), { lift: 230 * s + 60, spread: 320 * s + 80 });
         tween(this.p, { sparkle: 0.15 }, 500, ease.out);
         break;
-      case 'align': // into a road, from her fingers to it
+      case 'align':
         sky.motes?.align(sky.road);
         this.voice.play('tick');
         break;
@@ -798,11 +776,11 @@ export class Capri {
         this.fx.crackle(hand, { life: 640, radius: 70 * s + 14, count: 3 });
         const at = hand();
         this.fx.burst(at.x, at.y, { count: 14, inward: true, power: 0.5, spread: 90 * s });
-        this.fx.cutin(...this.cutinAt(-sky.dir, { flip: false }), { kind: 'eyes', life: 600 }); // never over the road
+        this.fx.cutin(...this.cutinAt(-sky.dir, { flip: false }), { kind: 'eyes', life: 600 });
         this.voice.play('charge');
         break;
       }
-      case 'surge': { // the red light goes up
+      case 'surge': {
         const at = hand();
         sky.surge = this.fx.surge(sky.road, {
           onHit: () => {
@@ -826,7 +804,7 @@ export class Capri {
         sky.motes?.dim();
         this.voice.play('tick');
         break;
-      case 'twinkle': { // and it answers
+      case 'twinkle': {
         const at = sky.sat.pos();
         sky.sat.twinkle(1);
         this.fx.ring(at.x, at.y, { size: 0.4 });
@@ -837,7 +815,7 @@ export class Capri {
         sky.sat.twinkle(0.55);
         if (!sky.motes) this.voice.play('star');
         break;
-      case 'home': // her stars come back to her, and her mane lights up with them
+      case 'home':
         sky.motes?.home(...this.moved());
         sky.motes = null;
         tween(this.p, { sparkle: 1.7 }, 400, ease.out).then(() => tween(this.p, { sparkle: 1 }, 700, ease.inOut));
@@ -866,8 +844,6 @@ export class Capri {
     await tween(p, { glitch: 0, split: 0 }, 450, ease.out);
   }
 
-  // Job done: the victory sequence (acting.js), its effects on cue. onSpeak runs when she
-  // comes back down (that's when the "done" panel comes in), or at the end if anything cut it short.
   async celebrate({ onSpeak } = {}) {
     this.onSpeak = onSpeak;
     if (reducedMotion.matches || this.stowed || this.dormant) {
@@ -879,15 +855,13 @@ export class Capri {
     this.fireSpeak();
   }
 
-  // ---------- moving around ----------
-
-  // Collapse into a line of light and go. Leaves her invisible; the caller puts her somewhere.
   async vanish({ beam = true } = {}) {
     const p = this.p;
     const s = this.scale;
     const from = { ...this.pos };
     const head = this.head();
-    if (this.sky) this.endAct(false); // the satellite stays here, she doesn't
+    if (this.sky) this.endAct(false);
+    this.stopPointing();
     if (reducedMotion.matches) {
       await tween(p, { alpha: 0 }, 160, ease.linear);
       return head;
@@ -901,14 +875,12 @@ export class Capri {
     p.alpha = 0;
     const ground = from.y - (this.p.sit ? (SPRITE.feet.y - SPRITE.hip) * s : 0);
     if (!this.upside) {
-      // the void she leaves behind, like in the show: a black slit with a red line in it
       this.fx.slit(from.x - 10 * s * this.facing, head.top, ground, { width: 56 * s + 10 });
       if (beam) this.fx.beam(from.x, ground, { width: 40 * s + 8 });
     }
     return head;
   }
 
-  // Come back at `to`: a column of light down to her, the body unfolding, two impact frames.
   async arrive(to, { face = null, stance = 'stand', perch = null, peekSide = null, dir = 0, fromHead = null, beam = true } = {}) {
     const p = this.p;
     const s = this.scale;
@@ -931,7 +903,6 @@ export class Capri {
     }
     const ground = stance === 'sit' ? to.y - (SPRITE.feet.y - SPRITE.hip) * s : to.y;
     if (beam) this.fx.beam(to.x, ground, { down: true, width: 40 * s + 8 });
-    // her pieces spiral back in, mane shards and green eye-stars
     this.fx.vortex(toHead.x, toHead.y + 30 * s, { radius: 170 * s + 40 });
     this.voice.play('teleport-in');
     await sleep(50);
@@ -940,7 +911,6 @@ export class Capri {
     p.glitchSeed = Math.random() * 100;
     await tween(p, { collapse: 0, dissolve: 0, glitch: 0.6, split: 6 }, 200, ease.out);
 
-    // two impact frames, the anime way
     p.sil = GREEN;
     p.silAmount = 1;
     this.drawFrame();
@@ -954,12 +924,11 @@ export class Capri {
     await tween(p, { glitch: 0, split: 0 }, 220, ease.out);
   }
 
-  // Leave in a column of light, reappear somewhere else.
   async teleport(to, opts = {}) {
-    if (this.stowed) return; // put away: she stays in her biochip
+    if (this.stowed) return;
     if (this.busy || this.dormant) {
       this.pending = { to, opts };
-      if (this.dormant) this.rouse(); // asleep, down to her mask: she comes back first, then goes
+      if (this.dormant) this.rouse();
       return;
     }
     this.busy = true;
@@ -971,7 +940,6 @@ export class Capri {
     await this.settle();
   }
 
-  // After a move: free again, stay put a while, the panel back, and the move that was waiting, if any.
   async settle() {
     this.busy = false;
     this.nextMove = Math.max(this.nextMove, performance.now() + rand(25000, 60000));
@@ -983,12 +951,10 @@ export class Capri {
     }
   }
 
-  // Ctrl+Alt+C: she folds herself into her biochip in the corner (she pulls in, collapses, and
-  // a streak runs from her to the chip). Asleep down to her mask, it's the mask that goes.
   async stow() {
     if (this.stowed || this.stowing) return;
     this.stowing = true;
-    for (let i = 0; this.busy && i < 30; i++) await sleep(100); // let a move finish
+    for (let i = 0; this.busy && i < 30; i++) await sleep(100);
     this.busy = true;
     this.endAct(false);
     this.onTeleport?.('start');
@@ -1019,10 +985,9 @@ export class Capri {
     this.root.hidden = true;
     this.onStow?.();
     this.busy = false;
-    if (this.unstowAfter) this.unstow(); // called back out while she was folding herself away
+    if (this.unstowAfter) this.unstow();
   }
 
-  // Already in it, no show (put away last time, she starts in it).
   stowNow() {
     this.stowed = true;
     this.hidden = true;
@@ -1032,8 +997,6 @@ export class Capri {
     this.onStow?.();
   }
 
-  // Asleep a while: her mane and her body come apart (shards drifting down, the drawing
-  // dissolving) and all that's left is her mask, floating there, eyes shut (chip.js Mask).
   async doze() {
     if (this.busy || this.dormant || this.stowed || this.hidden) return;
     this.busy = true;
@@ -1048,7 +1011,7 @@ export class Capri {
       this.p.glitchSeed = Math.random() * 100;
       await tween(this.p, { dissolve: 0.9, glitch: 0.25, sparkle: 0 }, 700, ease.in);
     }
-    this.setStance('stand'); // no ledge to fall off while she's away
+    this.setStance('stand');
     Object.assign(this.p, { alpha: 0, dissolve: 0, glitch: 0 });
     this.hidden = true;
     this.root.hidden = true;
@@ -1057,8 +1020,6 @@ export class Capri {
     this.busy = false;
   }
 
-  // Back from her mask: her eyes snap open, then she comes back together around it,
-  // on her ledge again if it's still there.
   async rouse() {
     if (!this.dormant) return;
     this.dormant = false;
@@ -1081,7 +1042,6 @@ export class Capri {
     await this.settle();
   }
 
-  // Out of her biochip: a streak from the chip, and she arrives next to it.
   async unstow() {
     this.unstowAfter = this.stowing;
     if (!this.stowed) return;
@@ -1115,9 +1075,6 @@ export class Capri {
       && this.windows.wins.some((w) => w.id === this.perch?.id);
   }
 
-  // Like in the show, she gets into things: she dives into the window she sits on and takes it
-  // over (fx.possess: its frame crackles, it glitches, it looks at you with her eyes), then comes
-  // out of another window, or further along this one if there's no other.
   async possess() {
     if (!this.canPossess()) return false;
     const s = this.scale;
@@ -1151,23 +1108,21 @@ export class Capri {
     const here = rect();
     let seat = this.pickSeat({ except: id });
     if (!seat && here && this.canSit(here)) {
-      const dx = clamp(here.w - entry + rand(-60, 60), 60, Math.max(60, here.w - 190)); // the other end of it
+      const dx = clamp(here.w - entry + rand(-60, 60), 60, Math.max(60, here.w - 190));
       if (!this.covered(here, here.x + dx)) seat = { win: here, dx };
     }
     const to = seat ? this.seat(seat.win, seat.dx) : this.spot('random');
     const toHead = this.head(to);
     if (here) {
-      // out through the system, from the middle of the window to where she comes out
       this.fx.streak(here.x + here.w / 2, here.y + here.h * 0.46, toHead.x, toHead.y);
       await sleep(60);
     }
-    if (seat) this.fx.slit(to.x, toHead.top, seat.win.y, { width: 56 * s + 10 }); // the void she climbs out of
+    if (seat) this.fx.slit(to.x, toHead.top, seat.win.y, { width: 56 * s + 10 });
     await this.arrive(to, seat ? { stance: 'sit', perch: { id: seat.win.id, dx: seat.dx }, beam: false } : {});
     await this.settle();
     return true;
   }
 
-  // Lean in from an edge of the screen: vanish, then slide in on twos, three drawings.
   async peek(side = pick(['left', 'right', 'top'])) {
     if (this.busy) return;
     const s = this.scale;
@@ -1186,7 +1141,6 @@ export class Capri {
       at = { x: w - 14 * s, y };
       from = { x: w + 170 * s, y };
     } else {
-      // hanging upside down from the top edge, only the head and the mane showing
       const x = rand(w * 0.2, w * 0.8);
       facing = pick([1, -1]);
       dir = x > w / 2 ? -1 : 1;
@@ -1221,7 +1175,6 @@ export class Capri {
     this.onTeleport?.('end');
   }
 
-  // Duck back out of view, then show up somewhere else (or peek from another edge, if shy).
   async unpeek({ shy = false } = {}) {
     if (this.busy || this.stance !== 'peek') return;
     this.busy = true;
@@ -1256,7 +1209,6 @@ export class Capri {
     this.onTeleport?.('end');
   }
 
-  // Where she'd end up falling straight down from here: a free ledge under her, or the floor.
   landing() {
     const hip = this.pos.y - (SPRITE.feet.y - SPRITE.hip) * this.scale;
     let best = null;
@@ -1309,7 +1261,6 @@ export class Capri {
     setTimeout(() => { p.glitch = 0; }, ON_ONES * 3);
   }
 
-  // First appearance: drop in from the top of the screen.
   async materialize(at) {
     const p = this.p;
     this.pos = { ...at };
@@ -1336,7 +1287,103 @@ export class Capri {
     this.busy = false;
   }
 
-  // Show up next to the mouse pointer (used when Claude needs you).
+  async intro(at, { label = 'hi', caption = 'PROJECT CAPRICORN', still = reducedMotion.matches } = {}) {
+    const p = this.p;
+    this.pos = { ...at };
+    this.faceCenter();
+    this.setStance('stand');
+    this.busy = true;
+    this.onTeleport?.('start');
+    p.alpha = 0;
+    p.collapse = 1;
+    p.dissolve = 0.5;
+    this.place();
+    const head = this.head(at, this.facing);
+    await this.fx.intro({
+      to: { x: head.x, y: head.y, size: 100 * this.scale },
+      label,
+      caption,
+      still,
+      onCue: (cue) => {
+        if (cue === 'open') this.voice.play('charge');
+        else if (cue === 'hand') this.voice.play('land');
+        else if (cue === 'wave') this.voice.play('rise');
+        else if (cue === 'grab') {
+          this.voice.play('land');
+          this.voice.play('bolt');
+        } else if (cue === 'hi') this.voice.play('hello');
+        else if (cue === 'slip') this.voice.play('teleport-out');
+      },
+    });
+    await this.arrive(at, { face: this.facing, beam: false });
+    this.busy = false;
+    this.onTeleport?.('end');
+  }
+
+  aimPoint(rect) {
+    const { w, h } = this.view;
+    const sh = this.limb(this.armToward(rect.x + rect.w / 2 < this.pos.x ? -1 : 1)).shoulder;
+    const inset = Math.min(24, rect.w / 3, rect.h / 3);
+    return {
+      x: clamp(clamp(sh.x, rect.x + inset, rect.x + rect.w - inset), 6, w - 6),
+      y: clamp(clamp(sh.y, rect.y + inset, rect.y + rect.h - inset), 6, h - 4),
+    };
+  }
+
+  spotNear(rect) {
+    const s = this.scale;
+    const { w, h } = this.view;
+    const side = 150 * s + 30;
+    const reach = 230 * s + 90;
+    const roomLeft = rect.x, roomRight = w - (rect.x + rect.w);
+    let x;
+    if (Math.max(roomLeft, roomRight) >= side + 40) {
+      x = roomRight >= roomLeft ? rect.x + rect.w + reach : rect.x - reach;
+    } else {
+      x = rect.x + rect.w / 2 < w / 2 ? w - side : side;
+    }
+    x = clamp(x, side, w - side);
+    const cy = clamp(rect.y + rect.h / 2, 0, h);
+    const shoulderToFeet = (SPRITE.feet.y - SPRITE.shoulder.y) * s;
+    const y = cy > h * 0.6 ? this.floor : clamp(cy + shoulderToFeet + 50, SPRITE.height * s + 40, this.floor);
+    return { x, y, face: rect.x + rect.w / 2 < x ? 1 : -1 };
+  }
+
+  async pointAt(rect, { label = '' } = {}) {
+    if (this.stowed) return false;
+    this.stopPointing();
+    const spot = this.spotNear(rect);
+    if (this.stance !== 'stand' || Math.hypot(spot.x - this.pos.x, spot.y - this.pos.y) > 140) {
+      await this.teleport({ x: spot.x, y: spot.y }, { face: spot.face });
+    }
+    if (this.stowed || this.hidden) return false;
+    const aim = this.aimPoint(rect);
+    const dir = aim.x < this.pos.x ? -1 : 1;
+    const side = this.armToward(dir);
+    const reach = () => {
+      const sh = this.limb(side).shoulder;
+      return clamp(Math.atan2(sh.y - aim.y, Math.abs(aim.x - sh.x)) + 0.52, -0.6, 1.7);
+    };
+    this.pointing = { rect, aim, dir, side, reach, label, pointer: null };
+    this.base = this.restBase();
+    await this.perform('point', dir, { reach });
+    if (this.pointing && !this.pointing.pointer) this.onCue('lock');
+    return true;
+  }
+
+  stopPointing() {
+    const pt = this.pointing;
+    if (!pt) return;
+    this.pointing = null;
+    pt.pointer?.retract();
+    this.base = this.restBase();
+    if (!this.busy && !this.hidden && this.stance === 'stand') this.perform('unpoint', pt.dir);
+  }
+
+  canPoint(win) {
+    return Boolean(win && !win.max && win.w > 120 && win.y > -10 && !this.covered(win, win.x + win.w / 2));
+  }
+
   async summon(cursor) {
     const { w, h } = this.view;
     const s = this.scale;
@@ -1358,22 +1405,23 @@ export class Capri {
     this.root.hidden = hidden;
   }
 
-  // ---------- pointer ----------
-
   bindPointer() {
     let down = null;
+    this.canvas.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      if (this.hit(e.clientX, e.clientY)) this.onMenu?.();
+    });
     this.canvas.addEventListener('mousedown', (e) => {
       if (e.button !== 0 || this.busy || !this.hit(e.clientX, e.clientY)) return;
       down = { x: e.clientX, y: e.clientY, pos: { ...this.pos } };
     });
     window.addEventListener('mousemove', (e) => {
-      this.mouse = { x: e.clientX, y: e.clientY }; // a window she's in watches it
+      this.mouse = { x: e.clientX, y: e.clientY };
       if (down) {
         const dx = e.clientX - down.x, dy = e.clientY - down.y;
         if (!this.dragging && Math.hypot(dx, dy) > 5 && !this.busy) {
           this.dragging = true;
           if (this.upside) {
-            // flip back upright under the pointer
             down.pos = { x: down.pos.x, y: down.y + (SPRITE.feet.y - SPRITE.head.y) * this.scale };
           }
           this.endAct(false);
@@ -1409,7 +1457,6 @@ export class Capri {
     });
   }
 
-  // Let go of her: onto a ledge if her hips are right at one, otherwise she falls.
   drop() {
     const s = this.scale;
     const hip = this.pos.y - (SPRITE.feet.y - SPRITE.hip) * s;
@@ -1427,10 +1474,8 @@ export class Capri {
     else this.perform('land');
   }
 
-  // When the pointer comes close she turns around to face it and cocks her head;
-  // if she's peeking, she's shy and ducks away.
   notice(x, y) {
-    if (this.busy || this.hidden || this.stance === 'fall' || this.sky) return; // the satellite has all her attention
+    if (this.busy || this.hidden || this.stance === 'fall' || this.sky) return;
     const h = this.head();
     if (Math.hypot(x - h.x, y - h.y) > 230) return;
     const now = performance.now();
@@ -1447,7 +1492,6 @@ export class Capri {
       return;
     }
     if (this.mode !== 'idle') return;
-    // now and then she's a little menace about it
     if (Math.random() < 0.3 && this.zap(x, y)) return;
     this.perform('curious', x < h.x ? -1 : 1);
   }

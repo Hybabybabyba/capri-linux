@@ -1,8 +1,3 @@
-// WebGL renderer for the Capri cut-out.
-// One texture, one quad: every bit of life (head tilt, mane sway and flare, both arms, sitting with
-// dangling legs, smear frames, afterimages, line boil, speckles, the violet misregistration, glitch
-// slices, teleport collapse) is done in the fragment shader.
-
 const VERT = `
 attribute vec2 aPos;
 uniform vec2 uView;
@@ -323,8 +318,7 @@ export const SPRITE = {
   width: 240, height: 420, pad: 56,
   head: { x: 116, y: 132 },
   feet: { x: 128, y: 418 },
-  hip: 232, // where she sits
-  // the reaching arm, as in the shader; the right arm is it mirrored around x = mirror / 2
+  hip: 232,
   shoulder: { x: 98, y: 168 },
   hand: { x: 24, y: 212 },
   mirror: 234,
@@ -381,7 +375,6 @@ export class SpriteRenderer {
     gl.clearColor(0, 0, 0, 0);
   }
 
-  // css size of the canvas for a given sprite scale
   static cssSize(scale) {
     return {
       width: Math.round((SPRITE.width + SPRITE.pad * 2) * scale),

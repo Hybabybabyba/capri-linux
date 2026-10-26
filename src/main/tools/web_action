@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+"""Веб для Капри без зависимостей (только стандартная библиотека Python).
+
+  web_action <url> [text]          текст страницы, коротко (по умолчанию)
+  web_action <url> links           ссылки страницы: текст -> адрес
+  web_action <url> title           заголовок страницы
+  web_action <url> open [браузер]  открыть в браузере (по умолчанию системный; floorp, librewolf, zen-browser, firefox)
+  web_action search "запрос"       результаты поиска DuckDuckGo: заголовок, адрес, сниппет
+
+  --max N  сколько символов выводить (по умолчанию 4000)
+Коды выхода: 0 ок, 2 неверные аргументы, 3 сеть/HTTP, 4 браузер не найден.
+"""
+import html
+import re
+import shutil
+import subprocess
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from html.parser import HTMLParser
+
+UA = 'Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0'
+TIMEOUT = 15
+MAX_BYTES = 3 * 1024 * 1024
+SKIP = {'script', 'style', 'noscript', 'template', 'svg', 'head', 'nav', 'footer', 'form', 'iframe'}
+BLOCK = {'p', 'div', 'br', 'li', 'tr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'section', 'article', 'header',
+         'pre', 'blockquote', 'table', 'ul', 'ol', 'dd', 'dt'}
+
+def die(code, msg):
+    print(f'web_action: {msg}', file=sys.stderr)
+    sys.exit(code)
+
+class Page(HTMLParser):
+    def __init__(self, base):
+        super().__init__(convert_charrefs=True)
+        self.base = base
+        self.skip = 0
+        self.parts = []
+        self.links = []
+        self.title = ''
+        self.in_title = False
+        self.href = None
+        self.link_text = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in SKIP:
+            self.skip += 1
+        if tag == 'title':
+            self.in_title = True
+        if tag in BLOCK:
+            self.parts.append('\n')
+        if tag == 'a':
+            href = dict(attrs).get('href')
+            if href and not href.startswith(('javascript:', '#', 'mailto:')):
+                self.href = urllib.parse.urljoin(self.base, href)
+                self.link_text = []
+
+    def handle_endtag(self, tag):
+        if tag in SKIP and self.skip:
+            self.skip -= 1
+        if tag == 'title':
+            self.in_title = False
+        if tag in BLOCK:
+            self.parts.append('\n')
+        if tag == 'a' and self.href:
+            text = ' '.join(''.join(self.link_text).split())
+            if text:
+                self.links.append((text, self.href))
+            self.href = None
+
+    def handle_data(self, data):
+        if self.in_title:
+            self.title += data
+        if self.skip:
+            return
+        self.parts.append(data)
+        if self.href:
+            self.link_text.append(data)
+
+    def text(self):
+        raw = ''.join(self.parts)
+        lines = (' '.join(line.split()) for line in raw.split('\n'))
+        out, blank = [], False
+        for line in lines:
+            if line:
+                out.append(line)
+                blank = False
+            elif not blank and out:
+                out.append('')
+                blank = True
+        return '\n'.join(out).strip()
+
+def fetch(url, data=None):
+    req = urllib.request.Request(url, data=data, headers={'User-Agent': UA, 'Accept-Language': 'ru,en;q=0.8'})
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as res:
+            body = res.read(MAX_BYTES)
+            charset = res.headers.get_content_charset()
+            final = res.geturl()
+    except urllib.error.HTTPError as e:
+        die(3, f'HTTP {e.code} для {url}')
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        die(3, f'не удалось загрузить {url}: {getattr(e, "reason", e)}')
+    if not charset:
+        m = re.search(rb'<meta[^>]+charset=["\']?([\w-]+)', body[:4096], re.I)
+        charset = m.group(1).decode() if m else 'utf-8'
+    try:
+        return body.decode(charset, errors='replace'), final
+    except LookupError:
+        return body.decode('utf-8', errors='replace'), final
+
+def parse(url):
+    body, final = fetch(url)
+    page = Page(final)
+    page.feed(body)
+    return page, final
+
+def normalize(url):
+    if not re.match(r'^[a-z][a-z0-9+.-]*://', url, re.I):
+        url = 'https://' + url
+    return url
+
+def search(query, limit):
+    body, _ = fetch('https://html.duckduckgo.com/html/', urllib.parse.urlencode({'q': query}).encode())
+    results = []
+    for m in re.finditer(r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>(.*?)(?=<a[^>]+class="result__a"|$)',
+                         body, re.S):
+        href, title, rest = m.groups()
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(html.unescape(href)).query)
+        link = q.get('uddg', [html.unescape(href)])[0]
+        snip = re.search(r'class="result__snippet"[^>]*>(.*?)</a>', rest, re.S)
+        clean = lambda s: ' '.join(html.unescape(re.sub(r'<[^>]+>', '', s)).split())
+        results.append(f'{len(results) + 1}. {clean(title)}\n   {link}\n   {clean(snip.group(1)) if snip else ""}'.rstrip())
+        if len(results) >= limit:
+            break
+    return '\n'.join(results) if results else 'ничего не найдено'
+
+def open_in_browser(url, browser):
+    if browser:
+        if not shutil.which(browser):
+            die(4, f'браузер {browser} не найден')
+        cmd = [browser, url]
+    else:
+        cmd = ['xdg-open', url]
+    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    return f'открыто: {url}' + (f' в {browser}' if browser else '')
+
+def main():
+    args = sys.argv[1:]
+    limit = 4000
+    if '--max' in args:
+        i = args.index('--max')
+        try:
+            limit = int(args[i + 1])
+        except (IndexError, ValueError):
+            die(2, '--max N')
+        del args[i:i + 2]
+    if not args or args[0] in ('-h', '--help'):
+        print(__doc__.strip())
+        sys.exit(0 if args else 2)
+
+    if args[0] == 'search':
+        if len(args) < 2:
+            die(2, 'web_action search "запрос"')
+        print(search(' '.join(args[1:]), 8)[:limit])
+        return
+
+    url = normalize(args[0])
+    action = args[1] if len(args) > 1 else 'text'
+
+    if action == 'open':
+        print(open_in_browser(url, args[2] if len(args) > 2 else None))
+    elif action == 'title':
+        page, _ = parse(url)
+        print(' '.join(page.title.split()) or '(без заголовка)')
+    elif action == 'links':
+        page, _ = parse(url)
+        seen, out = set(), []
+        for text, href in page.links:
+            if href in seen:
+                continue
+            seen.add(href)
+            out.append(f'{text[:80]} -> {href}')
+        print('\n'.join(out)[:limit] or '(ссылок нет)')
+    elif action == 'text':
+        page, final = parse(url)
+        title = ' '.join(page.title.split())
+        text = page.text()
+        head = f'# {title}\n{final}\n\n' if title else f'{final}\n\n'
+        body = text[:limit]
+        if len(text) > limit:
+            body += f'\n…[обрезано, всего {len(text)} символов; больше: --max N]'
+        print(head + body)
+    else:
+        die(2, f'неизвестное действие: {action} (text, links, title, open)')
+
+if __name__ == '__main__':
+    main()

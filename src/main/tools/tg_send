@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+set -uo pipefail
+source "$(dirname "$(readlink -f "$0")")/../shell-helpers.sh"
+
+TG_CLASS='^(org\.telegram\.desktop|TelegramDesktop)$'
+
+die() { echo "tg_send: $2" >&2; exit "$1"; }
+
+[ $# -ge 2 ] || die 2 'использование: tg_send @username|"Имя чата"|- "текст"'
+target="$1"; shift
+message="$*"
+[ -n "${message// }" ] || die 2 'пустое сообщение'
+
+tg_window() { hyprctl clients -j | jq -e --arg re "$TG_CLASS" 'any(.[]; .class | test($re))' >/dev/null; }
+
+wait_window() {
+  for _ in $(seq 1 "$1"); do tg_window && return 0; sleep 0.5; done
+  return 1
+}
+
+if ! tg_window; then
+  hyprctl dispatch exec Telegram >/dev/null
+  wait_window 24 || die 3 'окно Telegram не появилось за 12 секунд'
+  sleep 1.5
+fi
+
+case "$target" in
+  -)
+    ;;
+  @*|https://t.me/*|t.me/*)
+    user="${target#@}"; user="${user#https://}"; user="${user#t.me/}"; user="${user%%/*}"
+    [[ "$user" =~ ^[A-Za-z0-9_]{4,32}$ ]] || die 2 "это не похоже на username: '$target'"
+    open_url "tg://resolve?domain=$user"
+    sleep 1.5
+    ;;
+  *)
+    focus "$TG_CLASS" || die 3 'не удалось сфокусировать Telegram'
+    key Escape; sleep 0.2; key Escape; sleep 0.3
+    type_text "$target"
+    sleep 1.2
+    key Return
+    sleep 0.8
+    read -r wx wy ww wh <<<"$(window_geometry "$TG_CLASS")"
+    [ -n "${wh:-}" ] || die 3 'окно Telegram пропало'
+    hh=$(( wh / 8 < 90 ? 90 : wh / 8 ))
+    if [ "$ww" -ge 700 ]; then
+      left=$(( ww * 35 / 100 ))
+    else
+      left=0
+    fi
+    seen="$(region_text "$((wx + left)),$wy $((ww - left))x$hh" 2>/dev/null)"
+    seen="${seen,,}"
+    want="${target,,}"
+    if [ -z "$seen" ]; then
+      die 4 "не смогла прочитать экран Telegram, сообщение не отправлено"
+    fi
+    if ! grep -qF -- "$want" <<<"$seen"; then
+      langs="$(tesseract --list-langs 2>/dev/null | tr '\n' ' ')"
+      hint=''
+      [[ "$target" =~ [А-Яа-яЁё] && "$langs" != *rus* ]] && hint=' (нет OCR для русского: sudo pacman -S tesseract-data-rus)'
+      die 4 "не вижу на экране чат «$target», сообщение не отправлено$hint"
+    fi
+    ;;
+esac
+
+focus "$TG_CLASS" || die 3 'не удалось сфокусировать Telegram'
+type_text "$message"
+sleep 0.15
+key Return
+echo "отправлено в ${target/#-/открытый чат}: $message"

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -uo pipefail
+state="${CAPRI_DATA:-${XDG_DATA_HOME:-$HOME/.local/share}/capri-desktop}/resource-sentinel.json"
+case "${1:-status}" in
+  on) capri_emit game.force '{"on": true}' && echo 'игровой режим: включаю' ;;
+  off) capri_emit game.force '{"on": false}' && echo 'игровой режим: выключаю, всё возвращаю' ;;
+  status)
+    [ -r "$state" ] || { echo 'режим: обычный'; exit 0; }
+    jq -r 'if .active == null then "режим: обычный" else
+      .active.status | "режим: \(if .kind == "game" then "игровой" else "сборка" end) — \(.name), с \(.since / 1000 | localtime | strftime("%H:%M"))"
+        + (if (.frozen | length) > 0 then "; заморожено: \(.frozen | join(", "))" else "" end) end' "$state" ;;
+  *) echo 'game_mode on | off | status' >&2; exit 2 ;;
+esac

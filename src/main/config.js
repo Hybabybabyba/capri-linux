@@ -5,14 +5,23 @@ const path = require('node:path');
 const { app } = require('electron');
 
 const DEFAULTS = {
-  scale: 0.6,        // sprite scale, 0.6 ≈ 250px tall
+  scale: 0.6,
   muted: false,
   volume: 0.7,
-  lang: 'auto',      // 'auto' follows the system language, or 'fr' / 'en'
-  displayId: null,   // null = primary display
-  wander: true,      // random teleports when idle
-  possess: true,     // now and then she dives into the window she sits on and takes it over
+  displayId: null,
+  wander: true,
+  possess: true,
   visible: true,
+  watchdog: true,
+  diagnose: true,
+  archSentinel: true,
+  gameMode: true,
+  gameFreeze: false,
+  gameRefresh: true,
+  buildBoost: true,
+  freezeApps: ['zen', 'firefox', 'floorp', 'librewolf', 'chromium', 'chrome', 'brave', 'vivaldi-bin'],
+  gameClasses: ['^dota2$', '^cs2$', '^factorio$', '^Minecraft', '^PathOfExile', '^hl2_linux$'],
+  gameHooks: { start: '', stop: '' },
 };
 
 let cache = null;

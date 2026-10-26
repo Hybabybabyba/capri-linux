@@ -1,11 +1,4 @@
-// Full-screen effect layer: shards, light beams, the zigzag streak between two teleport
-// points, the void she collapses into and the swirl she comes back from, data glyphs,
-// mane shards drifting off, the stars rising out of her mane, the satellite and the red light
-// she sends up to it, the windows she takes over, red lightning, speed lines, shockwaves, and
-// the cut-ins (real frames of her from the show).
-// Drawn on whole frames (24 fps) and only while something is alive.
-
-import { rand, pick } from './util.js';
+import { rand, pick, clamp, power } from './util.js';
 
 export const COLORS = {
   red: '#ff2152',
@@ -19,18 +12,76 @@ export const COLORS = {
 const SHARD_PALETTE = ['red', 'red', 'red', 'red', 'ink', 'ink', 'green', 'green', 'violet', 'paper'];
 const GLYPHS = ['01', '10', '▚', '▞', '◢', '◣', '>_', '{}', '#', '⌁', '//', '0x'];
 const FRAME_MS = 1000 / 24;
-const CUTIN = { w: 360, h: 240 }; // assets/capri/cutin-*.png
+const CUTIN = { w: 360, h: 240 };
+const GRAB = {
+  w: 1672, h: 941,
+  face: { x: 830, y: 330, size: 430 },
+  eyes: [{ x: 719.5, y: 382.5 }, { x: 935, y: 297.5 }],
+  tilt: -0.38,
+  socket: 48, iris: 34, pupil: 13.5,
+  irisColor: '#026ffe', pupilColor: '#fdfdfb', inkColor: '#010207',
+  tag: { x: 1110, y: 175 },
+  hands: [{ x: 0, y: 610 }, { x: 1672, y: 520 }],
+};
+const INTRO_T = { hands: 6, right: 8, reach: 10, grab: 16, hold: 21, blink: 29, hi: 34, wave: 46, regrab: 64, slip: 70, antic: 76, shrink: 78, land: 88, end: 91 };
+export const GRAB_FRAMES = ['grab', 'mouth1', 'mouth2', 'mouth3', 'wave1', 'wave2'];
+const SAY_HI = ['mouth1', 'mouth1', 'mouth3', 'mouth3', 'mouth3', 'mouth3', 'mouth2', 'mouth2', 'mouth1', 'mouth1'];
 
 const lerp = (a, b, t) => a + (b - a) * t;
+
+const hash = (i, seed) => {
+  const v = Math.sin(i * 127.1 + seed * 311.7) * 43758.5453;
+  return v - Math.floor(v);
+};
+
+const JAG = 70;
+const JAG_AMP = 46;
+
+function cutEdges(ctx, rL, rR, seed) {
+  const { w, h } = GRAB;
+  const side = (r, left) => {
+    if (r <= 0) return;
+    const reach = r * w * 0.5;
+    const amp = JAG_AMP * Math.min(1, r * 4);
+    ctx.moveTo(left ? -60 : w + 60, -60);
+    for (let y = -60, i = 0; y <= h + 60 + JAG; y += JAG, i++) {
+      const x = reach + (hash(i, seed + (left ? 0 : 50)) - 0.5) * 2 * amp;
+      ctx.lineTo(left ? x : w - x, y);
+    }
+    ctx.lineTo(left ? -60 : w + 60, h + 60 + JAG);
+    ctx.closePath();
+  };
+  side(rL, true);
+  side(rR, false);
+}
+
+function cutBand(ctx, half, seed) {
+  const { h } = GRAB;
+  const cx = GRAB.face.x;
+  const ys = [];
+  for (let y = -60; y <= h + 60 + JAG; y += JAG) ys.push(y);
+  ys.forEach((y, i) => {
+    const x = cx - half - (hash(i, seed) - 0.5) * 2 * JAG_AMP;
+    if (i) ctx.lineTo(x, y);
+    else ctx.moveTo(x, y);
+  });
+  for (let i = ys.length - 1; i >= 0; i--) ctx.lineTo(cx + half + (hash(i, seed + 50) - 0.5) * 2 * JAG_AMP, ys[i]);
+  ctx.closePath();
+}
+
+function cutHead(ctx, R, seed) {
+  const N = 30;
+  for (let i = 0; i < N; i++) {
+    const a = (i / N) * Math.PI * 2;
+    const r = R * (i % 2 ? 0.78 : 1) * (0.92 + hash(i, seed) * 0.16);
+    const x = GRAB.face.x + Math.cos(a) * r * 1.15, y = GRAB.face.y + Math.sin(a) * r * 0.95;
+    if (i) ctx.lineTo(x, y);
+    else ctx.moveTo(x, y);
+  }
+  ctx.closePath();
+}
 const onTwos = (ms) => Math.floor(ms / (FRAME_MS * 2)) * FRAME_MS * 2;
 
-// Her mask, what she is at heart in the show once the mane and the body are gone: a green
-// slab of a face with a hooked spike rising from it, two eyes (ink almonds, green ring, blue
-// iris, white pupil turned toward `look`), and a white fang under it, all over a violet copy.
-// Drawn around (x, y) = the middle of the face, k = scale (1: about 95 px wide).
-//   eyes   how open each eye is, [left, right]; under 0.15 it's shut (a thick sleepy curve)
-//   spike  draw the hooked spike above it
-//   flat   one colour for the whole thing (an impact frame)
 const MASK = {
   face: [[-48, -20], [-12, -22], [48, -26], [46, 20], [-45, 23]],
   spike: [[-32, -20], [-37, -50], [-22, -63], [6, -67], [24, -75], [34, -99], [49, -90], [44, -66], [30, -48], [2, -42], [-10, -40], [-12, -21]],
@@ -79,7 +130,6 @@ export function drawMask(ctx, x, y, k, { eyes = [1, 1], look = null, spike = tru
   MASK.eyes.forEach(([ex, ey], i) => {
     const o = eyes[i];
     if (o < 0.15) {
-      // shut
       ctx.beginPath();
       ctx.moveTo(ex - 15, ey - 4);
       ctx.lineTo(ex, ey + 5);
@@ -98,7 +148,7 @@ export function drawMask(ctx, x, y, k, { eyes = [1, 1], look = null, spike = tru
     ctx.save();
     ctx.translate(ex, ey);
     ctx.scale(1, o);
-    ctx.beginPath(); // an almond of ink
+    ctx.beginPath();
     ctx.moveTo(-19, 0);
     ctx.quadraticCurveTo(0, -24, 19, 0);
     ctx.quadraticCurveTo(0, 24, -19, 0);
@@ -122,8 +172,6 @@ export function drawMask(ctx, x, y, k, { eyes = [1, 1], look = null, spike = tru
   ctx.restore();
 }
 
-// One of her eyes: green ring, blue iris, white pupil turned toward `look`, over an ink disk
-// with its violet copy. `open` squashes it shut. (The eyes all over a window she possesses.)
 export function drawEye(ctx, x, y, R, open, look = null) {
   let px = 0, py = 0;
   if (look) {
@@ -156,10 +204,13 @@ export function drawEye(ctx, x, y, R, open, look = null) {
 }
 
 export class FxLayer {
-  constructor(canvas, { cutins = {} } = {}) {
+  constructor(canvas, { cutins = {}, intro = null } = {}) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.cutins = cutins;
+    this.grab = intro?.grab || null;
+    this.grabFrames = intro || {};
+    if (this.grab) this.prepareGrab();
     this.items = [];
     this.running = false;
     this.last = 0;
@@ -172,6 +223,16 @@ export class FxLayer {
     this.canvas.style.width = `${width}px`;
     this.canvas.style.height = `${height}px`;
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.size = { w: width, h: height };
+  }
+
+  pointer(from, rect, aim, { label = '' } = {}) {
+    const item = this.add({ type: 'pointer', life: 10 * 60 * 1000, from, rect, aim, label, fadeAt: 0, tapAt: 0, retractAt: 0 });
+    return {
+      tap: () => { item.tapAt = performance.now(); },
+      retract: () => { item.retractAt ||= performance.now(); },
+      fade: () => { item.fadeAt ||= performance.now(); },
+    };
   }
 
   add(item) {
@@ -184,9 +245,6 @@ export class FxLayer {
     return item;
   }
 
-  // ---------- shards and light ----------
-
-  // Shards thrown out (or sucked in) around a point.
   burst(x, y, { count = 22, power = 1, inward = false, spread = 70 } = {}) {
     for (let i = 0; i < count; i++) {
       const angle = rand(0, Math.PI * 2);
@@ -210,12 +268,10 @@ export class FxLayer {
     }
   }
 
-  // Vertical pillar of light, from the top of the screen down to `bottom` (shrinking or landing).
   beam(x, bottom, { down = false, life = 200, width = 30 } = {}) {
     this.add({ type: 'beam', life, x, bottom, down, width });
   }
 
-  // Jagged line between two points, a frame or two long. It tells the eye where she went.
   streak(x1, y1, x2, y2, { life = 120 } = {}) {
     const pts = [];
     const n = 9;
@@ -229,7 +285,6 @@ export class FxLayer {
     this.add({ type: 'streak', life, pts });
   }
 
-  // Horizontal slivers of the body knocked sideways.
   slices(x, y, w, h, { count = 7, life = 160 } = {}) {
     for (let i = 0; i < count; i++) {
       this.add({
@@ -245,12 +300,10 @@ export class FxLayer {
     }
   }
 
-  // The void she collapses into, like in the show: a black slit with her as a red line inside.
   slit(x, top, bottom, { width = 60, life = 210 } = {}) {
     this.add({ type: 'slit', life, x, top, bottom, width });
   }
 
-  // How she comes back in the show: her pieces spiralling in, mane shards and green eye-stars.
   vortex(x, y, { radius = 170, life = 360, count = 18 } = {}) {
     const ps = Array.from({ length: count }, (_, i) => ({
       a: (i / count) * Math.PI * 2 + rand(-0.25, 0.25),
@@ -263,18 +316,14 @@ export class FxLayer {
     this.add({ type: 'vortex', life, x, y, radius, ps });
   }
 
-  // Manga concentration lines closing in on a point, redrawn every other frame.
   lines(x, y, { inner = 140, life = 480 } = {}) {
     this.add({ type: 'lines', life, x, y, inner });
   }
 
-  // A hard-edged shockwave.
   ring(x, y, { size = 1 } = {}) {
     this.add({ type: 'ring', life: 280, x, y, size });
   }
 
-  // Red lightning, her hacking power: a jagged bolt with forks, re-struck every frame.
-  // `to` can be a function of time, for a moving target.
   bolt(from, to, { life = 380, forks = 2, width = 3 } = {}) {
     this.add({ type: 'bolt', life, from, to, forks, width });
   }
@@ -283,7 +332,6 @@ export class FxLayer {
     this.add({ type: 'glyph', life: rand(900, 1400), x: x + rand(-40, 40), y, text: pick(GLYPHS), drift: rand(-12, 12) });
   }
 
-  // One shard coming loose from the mane and floating away, slowly, outward and up.
   drift(x, y, angle) {
     const speed = rand(16, 34);
     this.add({
@@ -300,14 +348,6 @@ export class FxLayer {
     });
   }
 
-  // ---------- the satellite ----------
-
-  // The white specks of her mane lifting off as a sky of her own, linked up like a
-  // constellation (all the minds in her). Handle:
-  //   align(ends)  they line up into a road between the two points ends() returns
-  //   light(ms)    they flare one after the other, from her end up, over ms
-  //   dim()        back to plain specks
-  //   home(dx, dy) they fly back into her mane (shifted by how far she moved since)
   motes(sources, { lift = 220, spread = 300 } = {}) {
     const ps = sources.map((s) => ({
       x0: s.x, y0: s.y,
@@ -319,7 +359,6 @@ export class FxLayer {
       u: 0,
       off: rand(-7, 7),
     }));
-    // each star linked to its nearest neighbour in the sky
     const links = [];
     ps.forEach((p, i) => {
       let best = -1, d = Infinity;
@@ -337,7 +376,6 @@ export class FxLayer {
       align: (ends) => {
         const [a, b] = ends();
         const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
-        // whoever is closest to her end goes first, so the stars don't cross each other's paths
         const along = (p) => ((p.x1 - a.x) * (b.x - a.x) + (p.y1 - a.y) * (b.y - a.y)) / len;
         [...ps].sort((p, q) => along(p) - along(q)).forEach((p, i) => { p.u = 0.1 + (0.82 * i) / Math.max(1, ps.length - 1); });
         item.ends = ends;
@@ -353,8 +391,6 @@ export class FxLayer {
     };
   }
 
-  // A satellite crossing the sky, slowly: it blinks into view, then glints on threes, with a
-  // short trail. Handle: pos(now), twinkle(size) (a big four-point flare, it answers her), fade().
   satellite(from, to, { duration = 9000 } = {}) {
     const item = this.add({ type: 'satellite', life: 60000, from, to, duration, flare: null, fadeAt: 0 });
     const pos = (now = performance.now()) => {
@@ -369,23 +405,13 @@ export class FxLayer {
     };
   }
 
-  // The red light going up: a heavy bolt from her hand to the satellite (ends() returns both).
-  // Its head races up in three drawings, the first one in negative (an impact frame), then it
-  // holds, struck fresh on every drawing with light running up it, until break(): it snaps and
-  // the pieces fall. onHit runs when it reaches the top.
   surge(ends, { onHit = null } = {}) {
     const item = this.add({ type: 'surge', life: 60000, ends, onHit, pts: null, breakAt: 0, pieces: null });
     return { break: () => { item.breakAt ||= performance.now(); } };
   }
 
-  // She takes over a window: lightning races round its frame from where she dove in, slices
-  // of it glitch, and it looks at you with her eyes and her grin, more eyes opening all over it,
-  // every pupil on your pointer. rect() gives the window now (null once it's gone), covers() the
-  // windows in front of it (nothing is drawn over those), look() the pointer.
-  // Handle: leave() closes the eyes and ends it.
   possess(rect, { covers = () => [], entry = 0, look = () => null } = {}) {
     const extra = Array.from({ length: 7 }, (_, i) => {
-      // around the face, not on it
       const a = (i / 7) * Math.PI * 2 + rand(-0.3, 0.3);
       return { u: 0.5 + Math.cos(a) * rand(0.28, 0.42), v: 0.46 + Math.sin(a) * rand(0.26, 0.4), size: rand(0.35, 0.65), at: 650 + i * 95 };
     });
@@ -393,26 +419,195 @@ export class FxLayer {
     return { leave: () => { item.leaveAt ||= performance.now(); } };
   }
 
-  // Little red sparks crawling out of a point (her hand charging up), wider as it goes.
-  // `at` can be a function, for a moving point.
   crackle(at, { life = 700, radius = 46, count = 3 } = {}) {
     this.add({ type: 'crackle', life, at, radius, count });
   }
 
-  // ---------- cut-ins ----------
-
-  // Anime cut-in: a slanted band with a close-up of her (a real frame from the show),
-  // pushed in, speed lines behind. Kinds: grin, laugh, eyes, many, look. Resolves when gone.
   cutin(x, y, dir = 1, { kind = 'grin', life = 760 } = {}) {
     const image = this.cutins[kind] || this.cutins.grin;
     if (!image) return Promise.resolve();
     return new Promise((done) => this.add({ type: 'cutin', life, x, y, dir, image, done }));
   }
 
-  // ---------- loop ----------
+  intro({ to, label = 'hi', caption = '', still = false, onCue = () => {} }) {
+    if (!this.grab || !this.size) return Promise.resolve();
+    const { w, h } = this.size;
+    const s = Math.max(w / GRAB.w, h / GRAB.h);
+    const at = { x: (w - GRAB.w * s) / 2 + GRAB.face.x * s, y: (h - GRAB.h * s) / 2 + GRAB.face.y * s };
+    const ctrl = { x: lerp(at.x, to.x, 0.25) - (to.x - at.x) * 0.2, y: lerp(at.y, to.y, 0.15) };
+    return new Promise((land) => {
+      this.add({ type: 'intro', smooth: true, life: FRAME_MS * (INTRO_T.end + 1), s, at, to, ctrl, label, caption, still, onCue, land, cued: -1 });
+    });
+  }
+
+  prepareGrab() {
+    const copy = (fill, mode) => {
+      const c = document.createElement('canvas');
+      c.width = GRAB.w;
+      c.height = GRAB.h;
+      const g = c.getContext('2d');
+      g.drawImage(this.grab, 0, 0);
+      g.globalCompositeOperation = mode;
+      g.fillStyle = fill;
+      g.fillRect(0, 0, c.width, c.height);
+      if (mode === 'multiply') {
+        g.globalCompositeOperation = 'destination-in';
+        g.drawImage(this.grab, 0, 0);
+      }
+      return c;
+    };
+    this.grabCopies = {
+      paper: copy(COLORS.paper, 'source-in'),
+      ink: copy(COLORS.ink, 'source-in'),
+      violet: copy(COLORS.violet, 'source-in'),
+      channels: ['#ff0000', '#00ff00', '#0000ff'].map((c) => copy(c, 'multiply')),
+    };
+  }
+
+  grabbed(it, x, y, k, { rot = 0, sx = 1, sy = 1, flat = null, split = 0, look = { x: 0, y: 0 }, open = 1, clip = null, cel = 'grab' } = {}) {
+    const { ctx } = this;
+    const c = this.grabCopies;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(rot);
+    ctx.scale(it.s * k * sx, it.s * k * sy);
+    ctx.translate(-GRAB.face.x, -GRAB.face.y);
+    if (clip) {
+      ctx.beginPath();
+      clip(ctx);
+      ctx.clip();
+    }
+    ctx.imageSmoothingQuality = 'high';
+    if (flat) {
+      ctx.drawImage(c[flat], 0, 0);
+    } else if (split) {
+      const d = split / (it.s * k);
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.drawImage(c.channels[0], -d, d * 0.3);
+      ctx.drawImage(c.channels[1], 0, 0);
+      ctx.drawImage(c.channels[2], d, -d * 0.3);
+      ctx.globalCompositeOperation = 'source-over';
+    } else {
+      ctx.drawImage(this.grabFrames[cel] || this.grab, 0, 0);
+      GRAB.eyes.forEach((e) => this.grabEye(e, look, open));
+    }
+    ctx.restore();
+  }
+
+  grabEye(e, look, open) {
+    const { ctx } = this;
+    const disk = (x, y, r, color) => {
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+    };
+    ctx.save();
+    disk(e.x, e.y, GRAB.socket, GRAB.inkColor);
+    ctx.clip();
+    if (open > 0) {
+      disk(e.x + look.x, e.y + look.y, GRAB.iris, GRAB.irisColor);
+      disk(e.x + look.x * 1.15, e.y + look.y * 1.15, GRAB.pupil + 1.6, GRAB.inkColor);
+      disk(e.x + look.x * 1.15, e.y + look.y * 1.15, GRAB.pupil, GRAB.pupilColor);
+    }
+    if (open < 1) {
+      ctx.translate(e.x, e.y);
+      ctx.rotate(GRAB.tilt);
+      const edge = open > 0 ? -GRAB.socket * 0.1 : GRAB.socket * 0.15;
+      ctx.fillStyle = GRAB.inkColor;
+      ctx.fillRect(-GRAB.socket, -GRAB.socket, GRAB.socket * 2, GRAB.socket + edge);
+      ctx.beginPath();
+      ctx.moveTo(-GRAB.socket, edge - 6);
+      ctx.quadraticCurveTo(0, edge + 10, GRAB.socket, edge - 6);
+      ctx.strokeStyle = COLORS.green;
+      ctx.lineWidth = 6;
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  hiTag(x, y, text, fs, k = 1, ky = 1) {
+    const { ctx } = this;
+    ctx.save();
+    ctx.font = `600 ${fs}px "Chakra Petch", sans-serif`;
+    ctx.letterSpacing = `${(-fs * 0.03).toFixed(1)}px`;
+    const skew = fs * 0.32, th = fs * 1.18;
+    const tw = ctx.measureText(text).width + fs * 0.9 + skew;
+    ctx.translate(x, y);
+    ctx.scale(k, k * ky);
+    const band = (dx, dy) => {
+      ctx.beginPath();
+      ctx.moveTo(skew + dx, -th / 2 + dy);
+      ctx.lineTo(tw + dx, -th / 2 + dy);
+      ctx.lineTo(tw - skew + dx, th / 2 + dy);
+      ctx.lineTo(dx, th / 2 + dy);
+      ctx.closePath();
+    };
+    band(7, 7);
+    ctx.fillStyle = COLORS.violet;
+    ctx.fill();
+    band(0, 0);
+    ctx.fillStyle = COLORS.red;
+    ctx.fill();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = COLORS.paper;
+    ctx.fillText(text, tw / 2, fs * 0.04);
+    ctx.restore();
+  }
+
+  typed(x, y, full, text, frame) {
+    const { ctx } = this;
+    ctx.save();
+    ctx.font = '400 12px "JetBrains Mono", monospace';
+    ctx.letterSpacing = '2px';
+    const tw = ctx.measureText(full).width;
+    ctx.fillStyle = COLORS.violet;
+    ctx.fillRect(x + 3, y - 12, tw + 28, 22);
+    ctx.fillStyle = COLORS.ink;
+    ctx.fillRect(x, y - 15, tw + 28, 22);
+    ctx.fillStyle = COLORS.paper;
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText(text, x + 9, y + 1);
+    if (text.length < full.length || (frame >> 2) % 2) {
+      ctx.fillStyle = COLORS.red;
+      ctx.fillRect(x + 10 + ctx.measureText(text).width, y - 10, 8, 13);
+    }
+    ctx.restore();
+  }
+
+  screenEdges(w, h, seed) {
+    const { ctx } = this;
+    let i = 0;
+    const r = (a, b) => a + hash(i++, seed) * (b - a);
+    const runs = (horizontal, fixed, len) => {
+      for (let p = r(-60, 0); p < len; p += r(70, 230)) {
+        const l = r(50, 190), t = r(4, 9);
+        const [x, y, rw, rh] = horizontal ? [p, fixed, l, t] : [fixed, p, t, l];
+        ctx.fillStyle = COLORS.violet;
+        ctx.fillRect(x + 3, y + 3, rw, rh);
+        ctx.fillStyle = COLORS.red;
+        ctx.fillRect(x, y, rw, rh);
+      }
+    };
+    runs(true, 0, w);
+    runs(true, h - 9, w);
+    runs(false, 0, h);
+    runs(false, w - 9, h);
+  }
+
+  voidSlit(x, y, w, h) {
+    const { ctx } = this;
+    ctx.fillStyle = COLORS.violet;
+    ctx.fillRect(x - w / 2 - 3, y - h / 2, w + 6, h);
+    ctx.fillStyle = COLORS.ink;
+    ctx.fillRect(x - w / 2, y - h / 2, w, h);
+    ctx.fillStyle = COLORS.red;
+    ctx.fillRect(x - 1, y - h * 0.42, 2, h * 0.84);
+  }
 
   frame(now) {
-    if (now - this.last < FRAME_MS - 2) {
+    if (now - this.last < FRAME_MS * power.slow - 2 && !this.items.some((it) => it.smooth)) {
       requestAnimationFrame((t) => this.frame(t));
       return;
     }
@@ -437,7 +632,6 @@ export class FxLayer {
     }
   }
 
-  // Fade-out in four steps, like cels swapped for lighter ones. Kills the item when done.
   fadeStep(it, now, ms) {
     if (!it.fadeAt) return 1;
     const k = (now - it.fadeAt) / ms;
@@ -448,7 +642,6 @@ export class FxLayer {
     return 1 - Math.floor(k * 4) / 4;
   }
 
-  // A shard shape centred on the origin, with its violet copy.
   shard(len, wid, color) {
     const { ctx } = this;
     const shape = (dx, dy) => {
@@ -467,7 +660,6 @@ export class FxLayer {
     ctx.fill();
   }
 
-  // A four-point star (her eyes look like these when she comes apart), with its violet copy.
   sparkle(x, y, s, fill, core = null) {
     const { ctx } = this;
     const path = (dx, dy, k) => {
@@ -500,14 +692,12 @@ export class FxLayer {
     drawEye(this.ctx, x, y, R, open, look);
   }
 
-  // A window she's in (see possess()): what's drawn on it, in screen coordinates.
   possession(it, r, now, leaving) {
     const { ctx } = this;
     const age = now - it.born;
     const frame = Math.floor(age / FRAME_MS);
     const look = it.look();
 
-    // an impact frame as she hits it
     if (frame === 0) {
       ctx.globalAlpha = 0.85;
       ctx.fillStyle = COLORS.ink;
@@ -515,7 +705,6 @@ export class FxLayer {
       ctx.globalAlpha = 1;
     }
 
-    // slices of it knocked sideways, re-rolled every other drawing
     if (!it.slices || it.drawn !== frame >> 1) {
       it.drawn = frame >> 1;
       it.slices = Array.from({ length: leaving >= 0 ? 2 : 6 }, () => ({
@@ -534,7 +723,6 @@ export class FxLayer {
     }
     ctx.restore();
 
-    // its frame: lightning racing round from where she dove in, both ways, struck fresh every drawing
     const P = 2 * (r.w + r.h);
     const grow = leaving >= 0 ? Math.max(0, 1 - leaving / (FRAME_MS * 5)) : Math.min(1, (frame + 1) / 8);
     const edge = (s) => {
@@ -561,14 +749,13 @@ export class FxLayer {
     }
     ctx.restore();
 
-    // her face in it: the eyes open in three drawings, blink once, shut as she leaves
     const stepOf = (ms) => Math.floor(ms / (FRAME_MS * 2));
     let open = age < 250 ? 0 : [0.25, 0.6, 1][Math.min(2, stepOf(age - 250))];
     if (age > 1150 && age < 1150 + FRAME_MS * 4) open = 0.12;
     if (leaving >= 0) open = [0.6, 0.2, 0][Math.min(2, stepOf(leaving))];
     if (!open) return;
     const R = Math.max(20, Math.min(72, Math.min(r.w, r.h) * 0.13));
-    const cx = r.x + r.w / 2 + rand(-1.5, 1.5), cy = r.y + r.h * 0.46 + rand(-1.5, 1.5); // shaking on ones
+    const cx = r.x + r.w / 2 + rand(-1.5, 1.5), cy = r.y + r.h * 0.46 + rand(-1.5, 1.5);
     for (const e of it.extra) {
       if (age < e.at) continue;
       const k = leaving >= 0 ? open : Math.min(1, (stepOf(age - e.at) + 1) / 3);
@@ -577,7 +764,6 @@ export class FxLayer {
     this.eye(cx - R * 1.6, cy - R * 0.3, R, open, look);
     this.eye(cx + R * 1.6, cy - R * 0.3, R, open, look);
     if (open >= 0.6) {
-      // the zigzag grin
       const pts = Array.from({ length: 7 }, (_, i) => [cx - R * 2.4 + (i * R * 4.8) / 6, cy + R * 1.4 + (i % 2 ? R * 0.6 : -R * 0.1)]);
       ctx.save();
       ctx.lineJoin = 'miter';
@@ -588,8 +774,6 @@ export class FxLayer {
     }
   }
 
-  // A jagged polyline from a to b, rolled fresh each call. `zig` makes it swing from side to
-  // side (mostly) with uneven steps, like drawn lightning, instead of wandering.
   jag(a, b, jitter, zig = false) {
     const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
     const nx = -(b.y - a.y) / len, ny = (b.x - a.x) / len;
@@ -612,7 +796,6 @@ export class FxLayer {
     return pts;
   }
 
-  // A polyline thickened into a flat shape, w0 wide at its start tapering to w1 at its end.
   ribbon(pts, w0, w1, dx = 0, dy = 0) {
     const { ctx } = this;
     const left = [], right = [];
@@ -629,7 +812,6 @@ export class FxLayer {
     ctx.closePath();
   }
 
-  // The point a fraction u of the way along a polyline (by index, close enough for a bolt).
   along(pts, u) {
     const f = Math.min(pts.length - 1.001, Math.max(0, u * (pts.length - 1)));
     const i = Math.floor(f), k = f - i;
@@ -668,7 +850,6 @@ export class FxLayer {
         const top = it.down ? it.bottom * k * 0.15 : 0;
         const h = it.bottom - top;
         ctx.save();
-        // jagged edges, re-rolled every frame
         const edge = (side) => {
           const pts = [];
           for (let y = top; y <= it.bottom; y += 18) pts.push([it.x + side * (w / 2 + rand(0, w * 0.35)), y]);
@@ -709,7 +890,7 @@ export class FxLayer {
         break;
       }
       case 'slit': {
-        const k = Math.floor(t * 5) / 5; // closes in five drawings
+        const k = Math.floor(t * 5) / 5;
         const w = Math.max(3, it.width * (1 - k));
         const h = it.bottom - it.top;
         ctx.fillStyle = COLORS.violet;
@@ -721,7 +902,7 @@ export class FxLayer {
         break;
       }
       case 'vortex': {
-        const k = Math.floor(t * 8) / 8; // eight drawings
+        const k = Math.floor(t * 8) / 8;
         for (const p of it.ps) {
           const ang = p.a + k * 4.2;
           const rr = it.radius * p.r * (1 - k);
@@ -739,7 +920,6 @@ export class FxLayer {
         break;
       }
       case 'drift': {
-        // moved on twos, like the body it came from
         const age = Math.floor((t * it.life) / 1000 * 12) / 12;
         const k = t < 0.6 ? 1 : 1 - (t - 0.6) / 0.4;
         ctx.save();
@@ -752,7 +932,7 @@ export class FxLayer {
       case 'motes': {
         const age = now - it.born;
         const frame = Math.floor(age / FRAME_MS);
-        const step = (since, ms) => Math.min(1, Math.max(0, onTwos(since) / ms)); // 0..1, on twos
+        const step = (since, ms) => Math.min(1, Math.max(0, onTwos(since) / ms));
         const road = it.ends?.();
         let nx = 0, ny = 0;
         if (road) {
@@ -762,12 +942,10 @@ export class FxLayer {
           ny = (b.x - a.x) / l;
         }
         const pos = it.ps.map((p) => {
-          // up off her mane with a slow-in, then swaying
           const e = 1 - Math.pow(1 - step(age - p.delay, 1100), 3);
           let x = lerp(p.x0, p.x1, e) + Math.sin(onTwos(age) / 650 + p.phase) * 4 * e;
           let y = lerp(p.y0, p.y1, e);
           if (road) {
-            // into line, the ones nearest her first
             const u = step(now - it.alignAt - p.u * 300, 450);
             const k = u < 0.5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2;
             const [a, b] = road;
@@ -786,8 +964,6 @@ export class FxLayer {
           break;
         }
         ctx.save();
-        // the constellation, a line at a time once they're up, gone when they line up;
-        // white over a violet copy, so it reads on a dark desktop and a light one
         if (!it.alignAt || now - it.alignAt < 160) {
           ctx.lineWidth = 1;
           it.links.forEach(([i, j], n) => {
@@ -806,7 +982,6 @@ export class FxLayer {
         it.ps.forEach((p, i) => {
           const { x, y } = pos[i];
           let s = (frame + Math.round(p.phase * 3)) % 6 < 3 ? p.size : p.size * 0.6;
-          // the light going up lights them as it passes, and they stay bright while it holds
           if (it.litAt && !it.homeAt && !(it.dimAt && now > it.dimAt)) {
             const since = now - it.litAt - p.u * it.litMs;
             if (since >= 0) s = since < FRAME_MS * 2 ? p.size * 3 : p.size * (frame % 2 ? 1.8 : 1.5);
@@ -820,7 +995,6 @@ export class FxLayer {
             ctx.fillRect(Math.round(x) - 0.5, Math.round(y - s), 1, s * 2);
           }
         });
-        // her fingertip, where the road starts, glinting on threes
         if (road && !it.homeAt) {
           this.sparkle(road[0].x, road[0].y, [6, 9, 5, 10][Math.floor(frame / 3) % 4], COLORS.paper, COLORS.red);
         }
@@ -842,7 +1016,6 @@ export class FxLayer {
         };
         ctx.save();
         ctx.globalAlpha = fade;
-        // trail: where it was, a dot every few drawings back
         for (let k = 1; k <= 5; k++) {
           const p = it.pos(now - onTwos(k * 140));
           ctx.fillStyle = k % 2 ? COLORS.violet : COLORS.paper;
@@ -851,13 +1024,11 @@ export class FxLayer {
         }
         const since = it.flare ? now - it.flare.at : Infinity;
         if (since < 460) {
-          // a big four-point flare with long rays, shrinking over seven drawings
           const k = Math.floor(since / (FRAME_MS * 2));
           const size = [44, 38, 32, 26, 20, 16, 13][Math.min(6, k)] * it.flare.size;
           rays(size * 3, 2);
           this.sparkle(x, y, size, COLORS.paper, COLORS.red);
         } else {
-          // blinks in (a speck, a flash, settling), then glints on threes
           const size = frame < 8 ? [2, 3, 20, 20, 14, 14, 11, 11][frame] : [8, 11, 7, 12][Math.floor(frame / 3) % 4];
           if (size >= 14) rays(size * 2.4, 2);
           this.sparkle(x, y, size, COLORS.paper);
@@ -872,7 +1043,6 @@ export class FxLayer {
         ctx.save();
         ctx.lineJoin = 'miter';
         if (it.breakAt) {
-          // snapped: one white drawing, then the pieces fall, fading out in four steps
           const pts = it.pts || [[a.x, a.y], [b.x, b.y]];
           it.pieces ||= pts.slice(1).map((end, i) => ({
             a: pts[i], b: end,
@@ -916,7 +1086,6 @@ export class FxLayer {
         const pts = this.jag(a, end, Math.min(24, Math.max(10, len * 0.05)), true);
         it.pts = pts;
         if (frame === 0) {
-          // impact frame: the bolt in negative
           this.ribbon(pts, 40, 22);
           ctx.fillStyle = COLORS.ink;
           ctx.fill();
@@ -924,7 +1093,7 @@ export class FxLayer {
           ctx.fillStyle = COLORS.paper;
           ctx.fill();
         } else {
-          const k = frame % 2 ? 1 : 0.75; // throbs on ones
+          const k = frame % 2 ? 1 : 0.75;
           this.ribbon(pts, 26 * k, 8 * k, -4, 4);
           ctx.fillStyle = COLORS.violet;
           ctx.fill();
@@ -943,7 +1112,6 @@ export class FxLayer {
             this.stroke(fork, COLORS.red, 3);
             this.stroke(fork, COLORS.paper, 1);
           }
-          // light running up it, toward the sky
           if (reach === 1) {
             for (let i = 0; i < 2; i++) {
               const p = this.along(pts, ((frame - 2) * 0.11 + i * 0.5) % 1);
@@ -961,7 +1129,6 @@ export class FxLayer {
           it.life = 0;
           break;
         }
-        // drawn on its own canvas so the windows in front of it can be cut out
         const M = 16, dpr = window.devicePixelRatio || 1;
         const cw = Math.ceil(r.w + M * 2), ch = Math.ceil(r.h + M * 2);
         it.off ||= document.createElement('canvas');
@@ -973,7 +1140,7 @@ export class FxLayer {
         o.setTransform(dpr, 0, 0, dpr, 0, 0);
         o.clearRect(0, 0, cw, ch);
         o.translate(M - r.x, M - r.y);
-        this.ctx = o; // the drawing helpers draw on this.ctx
+        this.ctx = o;
         try {
           this.possession(it, r, now, leaving);
         } finally {
@@ -1005,7 +1172,7 @@ export class FxLayer {
       }
       case 'bolt': {
         const frame = Math.floor((now - it.born) / FRAME_MS);
-        if (frame % 3 === 2) break; // strobes
+        if (frame % 3 === 2) break;
         const b = typeof it.to === 'function' ? it.to(now) : it.to;
         const len = Math.hypot(b.x - it.from.x, b.y - it.from.y);
         const pts = this.jag(it.from, b, Math.min(22, Math.max(7, len * 0.06)), true);
@@ -1052,7 +1219,7 @@ export class FxLayer {
         break;
       }
       case 'ring': {
-        const k = Math.floor(t * 6) / 6; // six drawings
+        const k = Math.floor(t * 6) / 6;
         const r = (40 + 230 * k) * it.size;
         const lw = Math.max(1, 8 * (1 - k) * it.size);
         ctx.save();
@@ -1068,7 +1235,6 @@ export class FxLayer {
       }
       case 'cutin': {
         const W = 250, H = 96, skew = 24;
-        // three-frame wipe in, two-frame squash out
         const open = t < 0.06 ? 0.3 : t < 0.12 ? 0.7 : 1;
         const tall = t > 0.9 ? 0.12 : t > 0.82 ? 0.5 : 1;
         const w = W * open, h = H * tall;
@@ -1090,12 +1256,10 @@ export class FxLayer {
         ctx.fillStyle = COLORS.ink;
         ctx.fill();
         ctx.clip();
-        // speed lines, re-drawn every frame, rushing away from her
         for (let i = 0; i < 9; i++) {
           ctx.fillStyle = i % 3 ? COLORS.red : COLORS.paper;
           ctx.fillRect(x0 + rand(-20, w), y0 + rand(0, h), rand(30, 110), rand(1, 3));
         }
-        // the close-up, pushed in a little more every frame, shaking on ones
         const zoom = ((h * 1.1) / CUTIN.h) * (1 + t * 0.08);
         const fw = CUTIN.w * zoom, fh = CUTIN.h * zoom;
         const cx = x0 + w / 2 + skew / 2 + rand(-2, 2), cy = y0 + h / 2 + rand(-2, 2);
@@ -1105,11 +1269,344 @@ export class FxLayer {
         ctx.restore();
         break;
       }
+      case 'intro': {
+        const T = INTRO_T;
+        const { s, at, to } = it;
+        const { w: vw, h: vh } = this.size;
+        const t = (now - it.born) / FRAME_MS;
+        const frame = Math.floor(t);
+        const onScreen = (p, x = at.x, y = at.y, k = 1) => ({ x: x + (p.x - GRAB.face.x) * s * k, y: y + (p.y - GRAB.face.y) * s * k });
+        const hands = GRAB.hands.map((p) => {
+          const q = onScreen(p);
+          return { x: clamp(q.x, 14, vw - 14), y: q.y };
+        });
+        for (let f = it.cued + 1; f <= frame; f++) {
+          if (f === 0) it.onCue('open');
+          if (it.still) {
+            if (f === T.grab) it.onCue('grab');
+          } else {
+            if (f === 3) for (const q of hands) this.crackle(q, { life: 260, radius: 70 });
+            if (f === T.hands || f === T.right) {
+              const q = hands[f === T.hands ? 0 : 1];
+              it.onCue('hand');
+              this.burst(q.x, q.y, { count: 10, power: 0.7, spread: 90 });
+              this.crackle(q, { life: 220, radius: 50 });
+            }
+            if (f === T.reach + 3) this.lines(at.x, at.y, { inner: Math.min(vw, vh) * 0.5, life: 260 });
+            if (f === T.grab) {
+              it.onCue('grab');
+              this.lines(at.x, at.y, { inner: Math.min(vw, vh) * 0.45, life: 320 });
+              this.burst(at.x, at.y, { count: 16, power: 1, spread: 160 });
+            }
+            if (f === T.slip) for (const q of hands) this.crackle(q, { life: 240, radius: 60 });
+          }
+          if (f === T.hi + 2) it.onCue('hi');
+          if (f === T.wave) it.onCue('wave');
+          if (f === T.regrab) {
+            it.onCue('hand');
+            if (!it.still) this.crackle(hands[1], { life: 220, radius: 50 });
+          }
+          if (f === T.slip) it.onCue('slip');
+          if (f === (it.still ? T.slip + 4 : T.land)) it.land();
+        }
+        it.cued = frame;
+
+        const tagAt = onScreen(GRAB.tag);
+        const fs = Math.round(clamp(vh * 0.06, 40, 76));
+        const hi = (k = 1, ky = 1) => {
+          this.hiTag(tagAt.x, tagAt.y, it.label, fs, k, ky);
+          if (it.caption && frame >= T.hi + 6 && ky === 1) {
+            this.typed(tagAt.x + fs * 0.5, tagAt.y + fs * 1.15, it.caption, it.caption.slice(0, (frame - T.hi - 6) * 2), frame);
+          }
+        };
+        const toward = { x: Math.sign(to.x - at.x) || 1, y: Math.sign(to.y - at.y) || 1 };
+        const since = frame - T.hold;
+        let look = { x: 0, y: 3 };
+        if (since < 3) look = { x: 0, y: 0 };
+        else if (since < 7) look = { x: -10, y: -3 };
+        else if (since < 11) look = { x: 10, y: -4 };
+        else if (frame >= T.regrab) look = { x: toward.x * 10, y: toward.y * 7 };
+        const b = frame - T.blink;
+        const open = b === 0 || b === 3 ? 0.5 : b === 1 || b === 2 ? 0 : 1;
+        const n = frame >> 1;
+        const noise = (k) => (hash(n, k) * 2 - 1);
+
+        if (it.still) {
+          const a = frame < 4 ? (frame + 1) / 4 : frame >= T.slip ? 1 - (frame - T.slip + 1) / 4 : 1;
+          if (a <= 0) break;
+          ctx.save();
+          ctx.globalAlpha = a;
+          this.grabbed(it, at.x, at.y, 1.02, { look: { x: 0, y: 3 } });
+          if (frame >= T.hi) hi();
+          ctx.restore();
+          break;
+        }
+
+        if (frame < T.hands) {
+          if (frame % 2 === 0 || frame === T.hands - 1) this.screenEdges(vw, vh, frame);
+          break;
+        }
+
+        if (frame < T.reach) {
+          const rL = 0.16, rR = frame >= T.right ? 0.16 : 0;
+          const g = frame - (frame >= T.right ? T.right : T.hands);
+          const jolt = [7, -3][g] ?? 0;
+          this.grabbed(it, at.x + jolt * (frame >= T.right ? 1 : -1), at.y + 70 * s, 1.04, {
+            look, open, clip: (c) => cutEdges(c, rL, rR, frame),
+          });
+          break;
+        }
+
+        if (frame < T.grab) {
+          const u = clamp((t - T.reach + 1) / (T.grab - T.reach), 0, 1);
+          const r = lerp(0.16, 1.2, u * u);
+          this.grabbed(it, at.x, at.y + 70 * s * (1 - u * u), lerp(1.04, 1.02, u), {
+            look, open, clip: (c) => cutEdges(c, r, r, frame),
+          });
+          break;
+        }
+
+        if (frame < T.hold) {
+          const g = frame - T.grab;
+          const shake = [24, -17, 11, -6, 3][g];
+          const x = at.x + shake, y = at.y - shake * 0.4;
+          if (g === 0) {
+            this.grabbed(it, x, y, 1.22, { flat: 'paper' });
+          } else if (g === 1) {
+            this.grabbed(it, x + 10, y + 10, 1.1, { flat: 'violet' });
+            this.grabbed(it, x, y, 1.1, { flat: 'ink' });
+          } else {
+            this.grabbed(it, x, y, [1.05, 1.02, 1.03][g - 2], { split: [16, 7, 2][g - 2] });
+          }
+          break;
+        }
+
+        if (frame < T.slip) {
+          const h0 = frame - T.hi - 2;
+          const w0 = frame - T.wave;
+          let cel = SAY_HI[frame - T.hi] ?? 'grab';
+          let snap = 0, shake = 0;
+          if (w0 >= 0 && frame < T.regrab) {
+            cel = w0 === 0 ? 'wave1' : Math.floor((w0 - 1) / 3) % 2 ? 'wave2' : 'wave1';
+            if (w0 === 0) [snap, shake] = [10, 6];
+          } else if (frame >= T.regrab && frame < T.regrab + 2) {
+            [snap, shake] = [[6, 8], [3, -4]][frame - T.regrab];
+          }
+          if (frame % 5 === 0 && it.drifted !== frame) {
+            it.drifted = frame;
+            const a = rand(-Math.PI * 0.95, -Math.PI * 0.05);
+            const r = Math.min(vw, vh) * rand(0.36, 0.5);
+            this.drift(at.x + Math.cos(a) * r * 1.3, at.y + Math.sin(a) * r, a);
+          }
+          const creep = 0.03 * clamp((t - T.hold) / (T.slip - T.hold), 0, 1);
+          const bob = h0 >= 0 && h0 < 8 ? [0.024, 0.024, -0.017, -0.017, 0.009, 0.009, 0, 0][h0] : 0;
+          const pop = h0 === 0 || h0 === 1 ? [0.025, 0.012][h0] : 0;
+          const k = 1.025 + pop + creep + 0.006 * Math.sin(t / 7);
+          const glitch = frame % 24 === 19 ? 6 : 0;
+          this.grabbed(it, at.x + noise(1) * 1.5 + shake, at.y + noise(2) * 1.5, k, { rot: noise(3) * 0.003 + bob, look, open, cel, split: snap || glitch });
+          if (h0 >= 0) hi([0.35, 1.22, 0.94][h0] ?? 1);
+          break;
+        }
+
+        const kHold = 1.055;
+        if (frame < T.antic) {
+          const g = frame - T.slip;
+          const u = clamp((t - T.slip + 1) / (T.antic - T.slip), 0, 1);
+          const half = lerp(GRAB.w * 0.5 + 60, 330, 1 - (1 - u) * (1 - u));
+          const y = at.y + 56 * s * u * u;
+          this.grabbed(it, at.x, y, kHold, { look, open, clip: (c) => cutBand(c, half, frame) });
+          if (it.shattered !== frame) {
+            it.shattered = frame;
+            for (const side of [-1, 1]) {
+              for (let j = 0; j < 2; j++) {
+                const q = onScreen({ x: GRAB.face.x + side * half, y: rand(250, 800) }, at.x, y, kHold);
+                this.burst(q.x, q.y, { count: 4, power: 0.55, spread: 40 });
+              }
+            }
+          }
+          if (g === 0) hi(1, 0.45);
+          break;
+        }
+
+        const R = 370;
+        const start = { x: at.x, y: at.y + 56 * s };
+        if (frame < T.shrink) {
+          const g = frame - T.antic;
+          const [sx, sy, dy] = [[1.08, 0.88, 24], [0.94, 1.12, -30]][g];
+          this.grabbed(it, start.x, start.y + dy * s, kHold * 0.9, { sx, sy, look, clip: (c) => cutHead(c, R, frame) });
+          break;
+        }
+
+        if (frame < T.land) {
+          const u = clamp((t - T.shrink + 1) / (T.land - T.shrink), 0, 1);
+          const lag = 0.12;
+          const k0 = kHold * 0.9, k1 = (to.size * 1.5) / (GRAB.face.size * s);
+          const place = (v) => {
+            const e = v * v;
+            const a = (1 - e) * (1 - e), c2 = 2 * e * (1 - e), c = e * e;
+            return {
+              x: a * start.x + c2 * it.ctrl.x + c * to.x,
+              y: a * start.y + c2 * it.ctrl.y + c * to.y,
+              k: lerp(k0, k1, 1 - (1 - v) * (1 - v)),
+            };
+          };
+          const trail = [];
+          for (let j = 0; j <= 10; j++) {
+            const q = place(Math.max(0, u - 0.45 + (j / 10) * 0.45));
+            trail.push([q.x + (j % 2 ? 1 : -1) * (3 + hash(j, frame) * 6), q.y]);
+          }
+          ctx.save();
+          ctx.lineJoin = 'miter';
+          this.stroke(trail, COLORS.violet, 5, -3, 3);
+          this.stroke(trail, COLORS.red, 4);
+          this.stroke(trail, COLORS.paper, 1.2);
+          ctx.restore();
+          const head = (c) => cutHead(c, R, frame);
+          for (const [back, alpha] of [[2, 0.14], [1, 0.3]]) {
+            const v = u - back * lag;
+            if (v <= 0) continue;
+            const q = place(v);
+            ctx.save();
+            ctx.globalAlpha = alpha;
+            this.grabbed(it, q.x, q.y, q.k, { flat: 'violet', clip: head });
+            ctx.restore();
+          }
+          const q = place(u), prev = place(Math.max(0, u - lag * 0.5));
+          const ang = Math.atan2(q.y - prev.y, q.x - prev.x);
+          const size = R * 2 * s * q.k;
+          const st = clamp(1 + (Math.hypot(q.x - prev.x, q.y - prev.y) / size) * 0.3, 1, 2);
+          ctx.save();
+          ctx.translate(q.x, q.y);
+          ctx.rotate(ang);
+          ctx.scale(st, 1 / Math.sqrt(st));
+          ctx.rotate(-ang);
+          this.grabbed(it, 0, 0, q.k, { look: { x: toward.x * 10, y: toward.y * 7 }, clip: head });
+          ctx.restore();
+          break;
+        }
+
+        const g = frame - T.land;
+        if (g < 2) this.voidSlit(to.x, to.y, to.size * [0.4, 0.1][g], to.size * 1.5);
+        break;
+      }
+      case 'pointer': {
+        const fade = this.fadeStep(it, now, 260);
+        if (!fade) break;
+        const { w: vw, h: vh } = this.size || { w: 1e5, h: 1e5 };
+        const age = now - it.born;
+        const frame = Math.floor(age / FRAME_MS);
+        const back = it.retractAt ? Math.floor((now - it.retractAt) / FRAME_MS) / 4 : 0;
+        if (back >= 1) {
+          it.life = 0;
+          break;
+        }
+        const a = it.from(), b = it.aim;
+        const grow = Math.min(1, (frame + 1) / 2) * (1 - back);
+        const ex = lerp(a.x, b.x, grow), ey = lerp(a.y, b.y, grow);
+        const off = it.rect.y > vh - 2 ? [0, 1] : it.rect.y + it.rect.h < 2 ? [0, -1] : it.rect.x > vw - 2 ? [1, 0] : it.rect.x + it.rect.w < 2 ? [-1, 0] : null;
+        ctx.save();
+        ctx.globalAlpha = fade;
+
+        ctx.setLineDash([9, 6]);
+        ctx.lineDashOffset = -Math.floor(frame / 2) * 5;
+        const line = [[a.x, a.y], [ex, ey]];
+        this.stroke(line, COLORS.violet, 4, -2, 2);
+        this.stroke(line, COLORS.paper, 2);
+        ctx.setLineDash([]);
+        if (!back) {
+          for (let i = 0; i < 3; i++) {
+            const u = (Math.floor(frame / 2) * 0.06 + i / 3) % 1;
+            if (u > grow) continue;
+            const px = lerp(a.x, b.x, u), py = lerp(a.y, b.y, u);
+            ctx.fillStyle = COLORS.violet;
+            ctx.fillRect(Math.round(px) - 3, Math.round(py) - 1, 5, 5);
+            ctx.fillStyle = i ? COLORS.green : COLORS.paper;
+            ctx.fillRect(Math.round(px) - 2, Math.round(py) - 2, 5, 5);
+          }
+        }
+
+        if (grow >= 1 && !off) {
+          const ang = Math.atan2(b.y - a.y, b.x - a.x);
+          for (const [dx, dy, color] of [[-2, 2, COLORS.violet], [0, 0, COLORS.red]]) {
+            ctx.beginPath();
+            ctx.moveTo(b.x + dx, b.y + dy);
+            ctx.lineTo(b.x - Math.cos(ang - 0.45) * 16 + dx, b.y - Math.sin(ang - 0.45) * 16 + dy);
+            ctx.lineTo(b.x - Math.cos(ang + 0.45) * 16 + dx, b.y - Math.sin(ang + 0.45) * 16 + dy);
+            ctx.closePath();
+            ctx.fillStyle = color;
+            ctx.fill();
+          }
+        }
+
+        const SLAM = [64, 36, 16, 4, 11, 7];
+        const tapK = it.tapAt ? Math.floor((now - it.tapAt) / FRAME_MS) : 99;
+        let pad = frame < SLAM.length ? SLAM[frame] : 7;
+        if (tapK < 2) pad += 6;
+        if (back) pad += back * 60;
+        const x0 = Math.max(4, it.rect.x - pad), y0 = Math.max(4, it.rect.y - pad);
+        const x1 = Math.min(vw - 4, it.rect.x + it.rect.w + pad), y1 = Math.min(vh - 4, it.rect.y + it.rect.h + pad);
+        const flash = frame < 5 || tapK < 2;
+        if ((frame % 8 !== 7 || frame < 8) && x1 > x0 && y1 > y0) {
+          const arm = Math.min(28, (x1 - x0) / 3, (y1 - y0) / 3);
+          const corners = [[x0, y0, 1, 1], [x1, y0, -1, 1], [x0, y1, 1, -1], [x1, y1, -1, -1]];
+          for (const [dx, dy, color, width] of [[-2, 2, COLORS.violet, 5], [0, 0, flash ? COLORS.paper : COLORS.red, 4]]) {
+            ctx.strokeStyle = color;
+            ctx.lineWidth = width;
+            for (const [cx, cy, sx, sy] of corners) {
+              ctx.beginPath();
+              ctx.moveTo(cx + dx, cy + sy * arm + dy);
+              ctx.lineTo(cx + dx, cy + dy);
+              ctx.lineTo(cx + sx * arm + dx, cy + dy);
+              ctx.stroke();
+            }
+          }
+          if (!back && frame >= 6 && x1 - x0 > 90 && y1 - y0 > 60) {
+            const open = Math.min(1, (frame - 6) / 3);
+            const blink = frame % 70 > 66 ? 0.15 : 1;
+            const center = { x: it.rect.x + it.rect.w / 2, y: it.rect.y + it.rect.h / 2 };
+            this.eye(x1 - 4, y0 + 4, 8, open * blink, center);
+            this.eye(x0 + 4, y1 - 4, 8, open * blink, center);
+          }
+        }
+
+        let tagAt = null;
+        if (off && grow >= 1) {
+          const bob = Math.floor(frame / 2) % 2 ? 3 : 0;
+          const px = clamp(it.rect.x + it.rect.w / 2, 14, vw - 14) - off[0] * (14 + bob);
+          const py = clamp(it.rect.y + it.rect.h / 2, 14, vh - 14) - off[1] * (14 + bob);
+          tagAt = { x: px - off[0] * 50, y: py - off[1] * 30 };
+          const ang2 = Math.atan2(off[1], off[0]);
+          for (const [dx, dy, color] of [[-2, 2, COLORS.violet], [0, 0, flash ? COLORS.paper : COLORS.red]]) {
+            ctx.beginPath();
+            ctx.moveTo(px + Math.cos(ang2) * 13 + dx, py + Math.sin(ang2) * 13 + dy);
+            ctx.lineTo(px + Math.cos(ang2 + 2.4) * 13 + dx, py + Math.sin(ang2 + 2.4) * 13 + dy);
+            ctx.lineTo(px + Math.cos(ang2 - 2.4) * 13 + dx, py + Math.sin(ang2 - 2.4) * 13 + dy);
+            ctx.closePath();
+            ctx.fillStyle = color;
+            ctx.fill();
+          }
+        }
+
+        if (it.label && !back && frame >= 4 && (x1 > x0 || tagAt)) {
+          ctx.font = '600 11px "JetBrains Mono", monospace';
+          const tw = ctx.measureText(it.label).width + 14;
+          const drop = frame < 6 ? (6 - frame) * 4 : 0;
+          const tx = clamp(tagAt ? tagAt.x - tw / 2 : x0, 4, vw - tw - 4);
+          const ty = (tagAt ? clamp(tagAt.y - 10, 4, vh - 23) : y0 > 30 ? y0 - 24 : y1 + 6) - drop;
+          ctx.fillStyle = COLORS.violet;
+          ctx.fillRect(tx - 2, ty + 2, tw, 19);
+          ctx.fillStyle = COLORS.red;
+          ctx.fillRect(tx, ty, tw, 19);
+          ctx.fillStyle = COLORS.paper;
+          ctx.fillText(it.label, tx + 7, ty + 13.5);
+        }
+        ctx.restore();
+        break;
+      }
       case 'glyph': {
         ctx.save();
         ctx.font = '600 11px "JetBrains Mono", monospace';
         ctx.globalAlpha = t < 0.15 ? t / 0.15 : 1 - (t - 0.15) / 0.85;
-        // stepped rise: whole pixels, every frame
         const y = Math.round(it.y - t * 46);
         const x = Math.round(it.x + it.drift * t);
         ctx.fillStyle = COLORS.violet;

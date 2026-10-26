@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -uo pipefail
+type="${1:-}"
+[[ "$type" =~ ^[a-z]+(\.[a-z_]+)+$ ]] || { echo 'capri_emit: <type> вида game.force' >&2; exit 2; }
+sock="${CAPRI_SOCKET:-${XDG_RUNTIME_DIR:-/tmp/capri-$UID}/capri/events.sock}"
+[ -S "$sock" ] || { echo "capri_emit: Капри не слушает $sock" >&2; exit 3; }
+payload="$(jq -cn --arg t "$type" --argjson extra "${2:-{\}}" '$extra + {type: $t}' 2>/dev/null)" || { echo 'capri_emit: второй аргумент — JSON-объект' >&2; exit 2; }
+python3 -c 'import socket, sys
+s = socket.socket(socket.AF_UNIX)
+s.connect(sys.argv[1])
+s.sendall(sys.argv[2].encode() + b"\n")' "$sock" "$payload" || exit 3
